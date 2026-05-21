@@ -10,7 +10,7 @@
   --bg1:#12111a;--bg2:#1a1926;--bg3:#24223a;--bgcard:#1e1d2f;
   --t1:#efeff6;--t2:#a09cb6;--tm:#6c6886;
   --ac:#a238ff;--ach:#b85cff;--acd:#7a20c7;--acg:rgba(162,56,255,.15);
-  --bdr:#2c2a44;--rad:12px;--rads:8px;--nph:96px;--tr:220ms ease;
+  --bdr:#2c2a44;--rad:12px;--rads:8px;--nph:110px;--tr:220ms ease;
 }
 html{font-size:16px;-webkit-font-smoothing:antialiased}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg1);color:var(--t1);min-height:100vh;overflow-x:hidden;padding-bottom:calc(var(--nph) + 24px)}
@@ -86,6 +86,11 @@ input{font-family:inherit}
 .np-ttl{font-size:.9rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .np-artname{font-size:.78rem;color:var(--t2)}
 .np-ctrls{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.np-timeline{display:flex;align-items:center;gap:8px;width:100%;margin-top:4px}
+.np-bar{flex:1;height:4px;background:var(--bg3);border-radius:2px;cursor:pointer;position:relative;overflow:hidden}
+.np-bar:hover{height:6px;margin-top:-1px;margin-bottom:-1px}
+.np-fill{height:100%;background:var(--ac);border-radius:2px;transition:width .1s linear;pointer-events:none}
+.np-time{font-size:.7rem;color:var(--tm);white-space:nowrap;min-width:36px;text-align:center;font-variant-numeric:tabular-nums}
 .nb{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:all var(--tr)}
 .nb:hover{background:var(--bg3)}
 .nb svg{width:18px;height:18px;fill:currentColor}
@@ -124,6 +129,10 @@ input{font-family:inherit}
   .hdr{padding:8px 0 14px}
   .np{padding:0 12px;gap:10px}
   .np-art{width:48px;height:48px}
+  .np-timeline{gap:4px}
+  .np-bar{height:3px}
+  .np-bar:hover{height:5px}
+  .np-time{font-size:.6rem}
   .nb{width:34px;height:34px}
   .nb.mn{width:40px;height:40px}
   .qi{flex:0 0 80px}
@@ -204,9 +213,16 @@ input{font-family:inherit}
 <!-- Now playing bar -->
 <div class="np hid" id="nowPlaying">
   <img class="np-art" id="npArt" alt="">
-  <div class="np-info" onclick="openDrawer()">
-    <div class="np-ttl" id="npTtl">—</div>
-    <div class="np-artname" id="npArtName">—</div>
+  <div class="np-info">
+    <div class="np-ttl" id="npTtl" onclick="openDrawer()">—</div>
+    <div class="np-artname" id="npArtName" onclick="openDrawer()">—</div>
+    <div class="np-timeline">
+      <span class="np-time" id="npElapsed">0:00</span>
+      <div class="np-bar" id="npProgressBar" onclick="event.stopPropagation(); seekTo(event)">
+        <div class="np-fill" id="npProgress" style="width:0%"></div>
+      </div>
+      <span class="np-time" id="npRemaining">-0:00</span>
+    </div>
   </div>
   <div class="np-ctrls">
     <button class="nb" title="Previous album" onclick="playPrevious()">
@@ -261,6 +277,8 @@ audio.addEventListener('play', () => { playing = true; updatePlayIcon(); });
 audio.addEventListener('pause', () => { playing = false; updatePlayIcon(); });
 audio.addEventListener('ended', onTrackEnd);
 audio.addEventListener('error', () => { playing = false; updatePlayIcon(); });
+audio.addEventListener('timeupdate', updateTimeline);
+audio.addEventListener('loadedmetadata', () => { updateTimeline(); });
 
 /* ── API helpers ─────────────────────────────────────── */
 async function api(path) {
@@ -529,8 +547,27 @@ function renderTrackList() {
 
 function formatDur(s) {
   const m = Math.floor(s / 60);
-  const sec = s % 60;
+  const sec = Math.floor(s % 60);
   return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function updateTimeline() {
+  const cur = audio.currentTime || 0;
+  const dur = audio.duration || 0;
+  const pct = dur ? (cur / dur) * 100 : 0;
+  document.getElementById('npProgress').style.width = pct + '%';
+  document.getElementById('npElapsed').textContent = formatDur(cur);
+  document.getElementById('npRemaining').textContent = dur ? '-' + formatDur(dur - cur) : '-0:00';
+}
+
+function seekTo(e) {
+  const bar = document.getElementById('npProgressBar');
+  const rect = bar.getBoundingClientRect();
+  const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  if (audio.duration) {
+    audio.currentTime = pct * audio.duration;
+    updateTimeline();
+  }
 }
 
 function logout() {
