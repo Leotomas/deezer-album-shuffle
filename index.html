@@ -142,6 +142,11 @@ input{font-family:inherit}
     <div class="user-info" id="userInfo" style="display:none">
       <span class="dot" id="statusDot"></span>
       <span id="userName"></span>
+      <select id="qualitySelect" onchange="onQualityChange()" style="margin-left:10px;background:var(--bg3);color:var(--t1);border:1px solid var(--bdr);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer">
+        <option value="1">128 kbps</option>
+        <option value="3" selected>320 kbps</option>
+        <option value="9">FLAC (Lossless)</option>
+      </select>
     </div>
   </div>
 
@@ -511,13 +516,28 @@ function formatDur(s) {
   return m + ':' + (sec < 10 ? '0' : '') + sec;
 }
 
+function onQualityChange() {
+  // Reload current track at new quality if playing
+  if (currentTracks.length && currentTrackIdx >= 0) {
+    const wasPlaying = playing;
+    const currentTime = audio.currentTime;
+    playTrackByIndex(currentTrackIdx);
+    audio.addEventListener('loadedmetadata', function restore() {
+      audio.currentTime = Math.min(currentTime, audio.duration || 0);
+      if (wasPlaying) audio.play().catch(() => {});
+      audio.removeEventListener('loadedmetadata', restore);
+    });
+  }
+}
+
 async function playTrackByIndex(idx) {
   if (!currentTracks[idx]) return;
   currentTrackIdx = idx;
   const track = currentTracks[idx];
   try {
-    // Use the stream proxy endpoint
-    audio.src = '/api/stream/' + track.id;
+    // Use the stream proxy endpoint with selected quality
+    const q = document.getElementById('qualitySelect')?.value || '3';
+    audio.src = '/api/stream/' + track.id + '?quality=' + q;
     audio.play().catch(() => {});
     playing = true;
     updatePlayIcon();
