@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deezer Album Shuffle</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg1:#12111a;--bg2:#1a1926;--bg3:#24223a;--bgcard:#1e1d2f;
+  --t1:#efeff6;--t2:#a09cb6;--tm:#6c6886;
+  --ac:#a238ff;--ach:#b85cff;--acd:#7a20c7;--acg:rgba(162,56,255,.15);
+  --bdr:#2c2a44;--rad:12px;--rads:8px;--nph:96px;--tr:220ms ease;
+}
+html{font-size:16px;-webkit-font-smoothing:antialiased}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg1);color:var(--t1);min-height:100vh;overflow-x:hidden;padding-bottom:calc(var(--nph) + 24px)}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit;display:inline-flex;align-items:center;justify-content:center}
+button:active{transform:scale(.96)}
+input{font-family:inherit}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
+::selection{background:var(--ac);color:#fff}
+
+.app{max-width:960px;margin:0 auto;padding:20px 16px}
+
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:12px 0 20px;gap:16px;flex-wrap:wrap}
+.logo{display:flex;align-items:center;gap:10px;font-size:1.3rem;font-weight:700}
+.logo svg{width:28px;height:28px;fill:var(--ac)}
+.user-info{display:flex;align-items:center;gap:10px;font-size:.88rem;color:var(--t2)}
+.user-info .dot{width:8px;height:8px;border-radius:50%;background:#4caf50}
+.user-info .dot.off{background:#f44336}
+
+/* ARL setup panel */
+.arl-panel{background:var(--bg2);border:1px solid var(--bdr);border-radius:var(--rad);padding:24px;margin-bottom:24px}
+.arl-panel h2{font-size:1.1rem;margin-bottom:8px}
+.arl-panel p{font-size:.85rem;color:var(--t2);margin-bottom:16px;line-height:1.5}
+.arl-row{display:flex;gap:10px}
+.arl-row input{flex:1;padding:12px 16px;background:var(--bg1);border:1px solid var(--bdr);border-radius:var(--rads);color:var(--t1);font-size:.9rem;outline:none}
+.arl-row input:focus{border-color:var(--ac)}
+.arl-row input::placeholder{color:var(--tm)}
+.arl-row button{padding:12px 24px;border-radius:var(--rads);background:var(--ac);color:#fff;font-weight:600;font-size:.9rem;white-space:nowrap}
+.arl-row button:hover{background:var(--ach)}
+
+.sbar{margin-bottom:24px;position:relative}
+.sbar input{width:100%;padding:12px 16px 12px 44px;background:var(--bg2);border:1px solid var(--bdr);border-radius:var(--rads);color:var(--t1);font-size:.95rem;transition:border-color var(--tr);outline:none}
+.sbar input:focus{border-color:var(--ac)}
+.sbar input::placeholder{color:var(--tm)}
+.sbar svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:18px;height:18px;stroke:var(--tm);fill:none;stroke-width:2}
+
+.ctrl-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px}
+.stats{font-size:.85rem;color:var(--tm)}
+.shuffle-ctrls{display:flex;gap:8px}
+.cb{width:42px;height:42px;border-radius:50%;background:var(--bg3);transition:all var(--tr);display:flex;align-items:center;justify-content:center}
+.cb:hover{background:var(--ac);color:#fff}
+.cb svg{width:18px;height:18px;fill:currentColor}
+.cb.play{background:var(--ac);width:48px;height:48px}
+.cb.play:hover{background:var(--ach)}
+.cb.play svg{width:22px;height:22px}
+
+.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:16px;margin-bottom:32px}
+.acard{background:var(--bgcard);border-radius:var(--rad);overflow:hidden;cursor:pointer;transition:all var(--tr);position:relative}
+.acard:hover{transform:translateY(-4px);box-shadow:0 8px 30px rgba(0,0,0,.4)}
+.acard.active{outline:2px solid var(--ac);outline-offset:-2px}
+.acard img{width:100%;aspect-ratio:1;object-fit:cover;display:block;background:var(--bg3)}
+.acard .inf{padding:10px 12px}
+.acard .ttl{font-size:.85rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acard .art{font-size:.75rem;color:var(--t2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acard .pov{position:absolute;top:0;left:0;right:0;aspect-ratio:1;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity var(--tr)}
+.acard:hover .pov{opacity:1}
+.pov svg{width:40px;height:40px;fill:#fff}
+
+.qs{margin-bottom:28px}
+.stitle{font-size:.85rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--tm);margin-bottom:12px}
+.qlist{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px}
+.qi{flex:0 0 100px;text-align:center;opacity:.6;transition:opacity var(--tr);cursor:pointer}
+.qi:first-child{opacity:.85}
+.qi:hover{opacity:1}
+.qi img{width:100px;height:100px;border-radius:var(--rads);object-fit:cover;background:var(--bg3)}
+.qi .qt{font-size:.7rem;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.np{position:fixed;bottom:0;left:0;right:0;height:var(--nph);background:linear-gradient(180deg,var(--bg2) 0%,var(--bg1) 100%);border-top:1px solid var(--bdr);display:flex;align-items:center;gap:14px;padding:0 20px;z-index:100;transition:transform .3s ease}
+.np.hid{transform:translateY(100%)}
+.np-art{width:60px;height:60px;border-radius:var(--rads);object-fit:cover;background:var(--bg3);flex-shrink:0}
+.np-info{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;cursor:pointer}
+.np-ttl{font-size:.9rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.np-artname{font-size:.78rem;color:var(--t2)}
+.np-ctrls{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.nb{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:all var(--tr)}
+.nb:hover{background:var(--bg3)}
+.nb svg{width:18px;height:18px;fill:currentColor}
+.nb.mn{background:var(--ac);width:44px;height:44px}
+.nb.mn:hover{background:var(--ach)}
+.nb.mn svg{width:22px;height:22px;fill:#fff}
+
+.db-bk{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;opacity:0;pointer-events:none;transition:opacity .3s ease}
+.db-bk.open{opacity:1;pointer-events:all}
+.dr{position:fixed;bottom:0;left:0;right:0;z-index:201;max-height:70vh;background:var(--bg2);border-radius:var(--rad) var(--rad) 0 0;transform:translateY(100%);transition:transform .3s ease;display:flex;flex-direction:column}
+.dr.open{transform:translateY(0)}
+.dr-hdr{display:flex;align-items:center;gap:14px;padding:16px 20px;border-bottom:1px solid var(--bdr);flex-shrink:0}
+.dr-hdr img{width:52px;height:52px;border-radius:var(--rads);object-fit:cover}
+.dr-hdr .dhi{flex:1;min-width:0}
+.dr-hdr .dht{font-weight:600;font-size:.95rem}
+.dr-hdr .dha{font-size:.8rem;color:var(--t2)}
+.dr-cls{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--bg3)}
+.dr-cls svg{width:16px;height:16px;fill:var(--t2)}
+.tlist{overflow-y:auto;flex:1;padding:8px 0}
+.ti{display:flex;align-items:center;gap:12px;padding:10px 20px;cursor:pointer;transition:background var(--tr)}
+.ti:hover{background:var(--acg)}
+.ti.act{color:var(--ac)}
+.tn{width:28px;text-align:center;font-size:.8rem;color:var(--tm);flex-shrink:0}
+.tt{flex:1;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.td{font-size:.78rem;color:var(--tm);flex-shrink:0}
+
+.ldg{display:flex;flex-direction:column;align-items:center;padding:60px 20px;color:var(--tm);gap:12px}
+.spn{width:36px;height:36px;border:3px solid var(--bdr);border-top-color:var(--ac);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty{text-align:center;padding:60px 20px;color:var(--tm)}
+.err{background:rgba(255,60,60,.12);border:1px solid rgba(255,60,60,.3);border-radius:var(--rads);padding:14px 18px;color:#ff6b6b;margin-bottom:20px;font-size:.88rem}
+.ok{background:rgba(76,175,80,.12);border:1px solid rgba(76,175,80,.3);border-radius:var(--rads);padding:14px 18px;color:#4caf50;margin-bottom:20px;font-size:.88rem}
+
+@media(max-width:600px){
+  .agrid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px}
+  .hdr{padding:8px 0 14px}
+  .np{padding:0 12px;gap:10px}
+  .np-art{width:48px;height:48px}
+  .nb{width:34px;height:34px}
+  .nb.mn{width:40px;height:40px}
+  .qi{flex:0 0 80px}
+  .qi img{width:80px;height:80px}
+}
+</style>
+</head>
+<body>
+
+<div class="app" id="app">
+  <div class="hdr">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+      Album Shuffle
+    </div>
+    <div class="user-info" id="userInfo" style="display:none">
+      <span class="dot" id="statusDot"></span>
+      <span id="userName"></span>
+      <select id="qualitySelect" onchange="onQualityChange()" style="margin-left:10px;background:var(--bg3);color:var(--t1);border:1px solid var(--bdr);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer">
+        <option value="1">128 kbps</option>
+        <option value="3" selected>320 kbps</option>
+        <option value="9">FLAC (Lossless)</option>
+      </select>
+      <button onclick="logout()" style="margin-left:10px;background:var(--bg3);color:var(--t2);border:1px solid var(--bdr);border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer" title="Logout (forget ARL)">Logout</button>
+    </div>
+  </div>
+
+  <div id="msgArea"></div>
+
+  <!-- ARL setup (shown when not authenticated) -->
+  <div class="arl-panel" id="arlPanel">
+    <h2>🔑 Connect your Deezer account</h2>
+    <p>
+      Enter your ARL cookie to access your albums and stream music.<br>
+      <strong>How to get it:</strong> Log into <a href="https://www.deezer.com" target="_blank" style="color:var(--ac)">deezer.com</a> → F12 → Application → Cookies → <code>arl</code> → Copy the value.<br>
+      <small style="color:var(--tm)">Optionally, also copy the cookie expiry date so the app can warn you before it expires.</small>
+    </p>
+    <div class="arl-row">
+      <input type="password" id="arlInput" placeholder="Paste your ARL cookie here…">
+      <input type="date" id="arlExpiry" style="background:var(--bg1);color:var(--t2);border:1px solid var(--bdr);border-radius:6px;padding:12px;font-size:.85rem;width:160px" title="ARL cookie expiry date (optional)" placeholder="Expiry (optional)">
+      <button onclick="setArl()">Connect</button>
+    </div>
+  </div>
+
+  <!-- Main UI (hidden until authenticated) -->
+  <div id="mainUI" style="display:none">
+    <div class="sbar">
+      <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="searchInput" placeholder="Filter by artist or genre…" oninput="filterAlbums()">
+    </div>
+
+    <div class="ctrl-row">
+      <div class="stats" id="stats"></div>
+      <div class="shuffle-ctrls">
+        <button class="cb" title="Previous album" onclick="playPrevious()">
+          <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+        </button>
+        <button class="cb play" title="Shuffle & Play" onclick="startShuffle()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/><path d="M9 9l4.5 4.5"/></svg>
+        </button>
+        <button class="cb" title="Skip" onclick="skipAlbum()">
+          <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zm8.5-6L16 6v12l-1.5-6zM20 6h2v12h-2V6z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="qs" id="queueSec" style="display:none">
+      <div class="stitle">Up Next</div>
+      <div class="qlist" id="queueList"></div>
+    </div>
+
+    <div id="gridWrap">
+      <div class="empty">Loading albums…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Now playing bar -->
+<div class="np hid" id="nowPlaying">
+  <img class="np-art" id="npArt" alt="">
+  <div class="np-info" onclick="openDrawer()">
+    <div class="np-ttl" id="npTtl">—</div>
+    <div class="np-artname" id="npArtName">—</div>
+  </div>
+  <div class="np-ctrls">
+    <button class="nb" title="Previous album" onclick="playPrevious()">
+      <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+    </button>
+    <button class="nb mn" id="npPlayBtn" title="Play / Pause" onclick="togglePlay()">
+      <svg viewBox="0 0 24 24" id="npPlayIcon"><path d="M8 5v14l11-7z"/></svg>
+    </button>
+    <button class="nb" title="Skip" onclick="skipAlbum()">
+      <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zm8.5-6L16 6v12l-1.5-6zM20 6h2v12h-2V6z"/></svg>
+    </button>
+    <button class="nb" title="Track list" onclick="openDrawer()">
+      <svg viewBox="0 0 24 24"><path d="M3 15h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V9H3v2zm4 4h14v-2H7v2zm0-4h14V9H7v2zM3 5v2h2V5H7v2h14V5H3z"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- Track drawer -->
+<div class="db-bk" id="drBk" onclick="closeDrawer()"></div>
+<div class="dr" id="drawer">
+  <div class="dr-hdr">
+    <img id="drArt" alt="">
+    <div class="dhi">
+      <div class="dht" id="drTtl">—</div>
+      <div class="dha" id="drArtName">—</div>
+    </div>
+    <button class="dr-cls" onclick="closeDrawer()">
+      <svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+    </button>
+  </div>
+  <div class="tlist" id="trackList"></div>
+</div>
+
+<!-- Hidden audio player -->
+<audio id="audioPlayer" preload="auto"></audio>
+
+<script>
+/* ── State ───────────────────────────────────────────── */
+let allAlbums = [];
+let filtered = [];
+let queue = [];
+let history = [];
+let currentAlbum = null;
+let currentTracks = [];
+let currentTrackIdx = 0;
+let playing = false;
+let authenticated = false;
+
+const audio = document.getElementById('audioPlayer');
+
+audio.addEventListener('play', () => { playing = true; updatePlayIcon(); });
+audio.addEventListener('pause', () => { playing = false; updatePlayIcon(); });
+audio.addEventListener('ended', onTrackEnd);
+audio.addEventListener('error', () => { playing = false; updatePlayIcon(); });
+
+/* ── API helpers ─────────────────────────────────────── */
+async function api(path) {
+  const res = await fetch('/api/' + path);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'HTTP ' + res.status);
+  }
+  return res.json();
+}
+
+/* ── ARL auth ────────────────────────────────────────── */
+async function setArl() {
+  const arl = document.getElementById('arlInput').value.trim();
+  if (!arl) return;
+  const arlExpiry = document.getElementById('arlExpiry').value || null;
+  try {
+    await fetch('/api/set-arl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ arl, arlExpiry })
+    });
+    const status = await api('status');
+    if (status.valid) {
+      authenticated = true;
+      document.getElementById('arlPanel').style.display = 'none';
+      document.getElementById('mainUI').style.display = '';
+      const isPrem = status.user?.premium; showMsg('Connected as ' + (status.user?.name || 'Unknown') + (isPrem ? '' : ' — Free account: 30s previews only'), isPrem ? 'ok' : 'err');
+      document.getElementById('userInfo').style.display = '';
+      document.getElementById('userName').textContent = status.user?.name || '';
+      document.getElementById('statusDot').className = 'dot';
+      fetchAlbums();
+    } else {
+      showMsg('ARL cookie is invalid or expired. Try a fresh one.', 'err');
+    }
+  } catch (e) {
+    showMsg('Failed: ' + e.message, 'err');
+  }
+}
+
+async function checkAuth() {
+  try {
+    const status = await api('status');
+    if (status.arl && status.valid) {
+      authenticated = true;
+      document.getElementById('arlPanel').style.display = 'none';
+      document.getElementById('mainUI').style.display = '';
+      document.getElementById('userInfo').style.display = '';
+      document.getElementById('userName').textContent = status.user?.name || '';
+      document.getElementById('statusDot').className = 'dot';
+      if (!status.user?.premium) {
+        showMsg('Free account detected — you\'ll get 30-second previews. Full playback requires Deezer Premium.', 'err');
+      }
+      // ARL expiry warning
+      if (status.arlExpiry) {
+        const expiry = new Date(status.arlExpiry);
+        const now = new Date();
+        const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
+        if (daysLeft <= 0) {
+          showMsg('⚠️ ARL cookie has EXPIRED! Paste a fresh one to keep using the app.', 'err');
+          document.getElementById('arlPanel').style.display = '';
+          return;
+        } else if (daysLeft <= 7) {
+          showMsg('⚠️ ARL cookie expires in ' + daysLeft + ' day' + (daysLeft !== 1 ? 's' : '') + ' — get ready to refresh it.', 'err');
+        }
+      }
+      fetchAlbums();
+    } else if (status.arl && !status.valid) {
+      showMsg('ARL cookie expired. Please enter a new one.', 'err');
+    }
+  } catch {
+    // No ARL set yet, show panel
+  }
+}
+
+function showMsg(text, type) {
+  const el = document.getElementById('msgArea');
+  el.innerHTML = `<div class="${type}">${escHtml(text)}</div>`;
+  setTimeout(() => { el.innerHTML = ''; }, 5000);
+}
+
+/* ── Fetch Albums ────────────────────────────────────── */
+async function fetchAlbums() {
+  const wrap = document.getElementById('gridWrap');
+  wrap.innerHTML = '<div class="ldg"><div class="spn"></div>Loading albums…</div>';
+  try {
+    allAlbums = [];
+    let start = 0;
+    let hasMore = true;
+    const batchSize = 100;
+    while (hasMore) {
+      const d = await api('albums?limit=' + batchSize + '&start=' + start);
+      if (d.error) throw new Error(d.error);
+      const items = d.data || [];
+      allAlbums = allAlbums.concat(items);
+      start += items.length;
+      hasMore = d.hasMore && items.length >= batchSize;
+    }
+    filtered = [...allAlbums];
+    updateStats();
+    renderGrid(filtered);
+  } catch (e) {
+    showMsg('Failed to fetch albums: ' + e.message, 'err');
+    wrap.innerHTML = '<div class="empty">Could not load albums</div>';
+  }
+}
+
+/* ── Filter / Search ─────────────────────────────────── */
+function filterAlbums() {
+  const q = document.getElementById('searchInput').value.toLowerCase().trim();
+  if (!q) { filtered = [...allAlbums]; }
+  else {
+    filtered = allAlbums.filter(a =>
+      (a.artist?.name?.toLowerCase().includes(q)) ||
+      (a.title?.toLowerCase().includes(q))
+    );
+  }
+  updateStats();
+  renderGrid(filtered);
+}
+
+/* ── Render Grid ─────────────────────────────────────── */
+function renderGrid(albums) {
+  const wrap = document.getElementById('gridWrap');
+  if (!albums.length) {
+    wrap.innerHTML = '<div class="empty">No albums found</div>';
+    return;
+  }
+  let html = '<div class="agrid">';
+  for (const a of albums) {
+    const active = currentAlbum && currentAlbum.id === a.id ? ' active' : '';
+    const img = a.cover_medium || a.cover || '';
+    html += `<div class="acard${active}" data-id="${a.id}" onclick="playAlbumById(${a.id})">
+      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <div class="pov"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+      <div class="inf"><div class="ttl">${escHtml(a.title)}</div><div class="art">${escHtml(a.artist ? a.artist.name : '')}</div></div>
+    </div>`;
+  }
+  html += '</div>';
+  wrap.innerHTML = html;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+/* ── Shuffle ─────────────────────────────────────────── */
+function startShuffle() {
+  if (!allAlbums.length) return;
+  queue = shuffleArr([...allAlbums]);
+  history = [];
+  const album = queue.shift();
+  playAlbum(album);
+  refillQueue();
+  renderQueue();
+}
+
+function shuffleArr(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function skipAlbum() {
+  if (!queue.length && !allAlbums.length) return;
+  if (!queue.length) queue = shuffleArr([...allAlbums]);
+  const album = queue.shift();
+  if (currentAlbum) history.push(currentAlbum);
+  playAlbum(album);
+  refillQueue();
+  renderQueue();
+}
+
+function playPrevious() {
+  if (!history.length) return;
+  if (currentAlbum) queue.unshift(currentAlbum);
+  const album = history.pop();
+  playAlbum(album);
+  renderQueue();
+}
+
+function refillQueue() {
+  while (queue.length < 5 && allAlbums.length) {
+    queue = queue.concat(shuffleArr([...allAlbums]));
+  }
+}
+
+function renderQueue() {
+  const el = document.getElementById('queueList');
+  const sec = document.getElementById('queueSec');
+  const show = queue.slice(0, 5);
+  if (!show.length) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  let html = '';
+  for (const a of show) {
+    const img = a.cover_medium || a.cover || '';
+    html += `<div class="qi" onclick="playAlbumById(${a.id})">
+      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <div class="qt">${escHtml(a.title)}</div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+/* ── Play Album ──────────────────────────────────────── */
+async function playAlbum(album) {
+  currentAlbum = album;
+  updateNowPlaying(album);
+  await fetchAndRenderTracks(album.id);
+  // Play first track
+  if (currentTracks.length) {
+    currentTrackIdx = 0;
+    await playTrackByIndex(0);
+  }
+  // Mark active card
+  document.querySelectorAll('.acard').forEach(c => {
+    c.classList.toggle('active', c.dataset.id == album.id);
+  });
+}
+
+async function playAlbumById(id) {
+  const album = allAlbums.find(a => a.id === id);
+  if (!album) return;
+  if (currentAlbum) history.push(currentAlbum);
+  const idx = queue.findIndex(a => a.id === id);
+  if (idx >= 0) queue.splice(idx, 1);
+  await playAlbum(album);
+  refillQueue();
+  renderQueue();
+}
+
+/* ── Track List ───────────────────────────────────────── */
+async function fetchAndRenderTracks(albumId) {
+  try {
+    const d = await api('album/' + albumId + '/tracks?limit=100');
+    currentTracks = d.data || [];
+    renderTrackList();
+  } catch (e) {
+    currentTracks = [];
+    renderTrackList();
+  }
+}
+
+function renderTrackList() {
+  const el = document.getElementById('trackList');
+  if (!currentTracks.length) {
+    el.innerHTML = '<div class="empty" style="padding:30px">No tracks</div>';
+    return;
+  }
+  let html = '';
+  currentTracks.forEach((t, i) => {
+    const dur = t.duration ? formatDur(t.duration) : '';
+    const act = i === currentTrackIdx ? ' act' : '';
+    html += `<div class="ti${act}" data-idx="${i}" onclick="playTrackByIndex(${i})">
+      <span class="tn">${i + 1}</span>
+      <span class="tt">${escHtml(t.title)}</span>
+      <span class="td">${dur}</span>
+    </div>`;
+  });
+  el.innerHTML = html;
+}
+
+function formatDur(s) {
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function logout() {
+  if (!confirm('Forget ARL cookie and logout?')) return;
+  fetch('/api/logout', { method: 'POST' });
+  authenticated = false;
+  audio.pause();
+  audio.src = '';
+  document.getElementById('arlPanel').style.display = '';
+  document.getElementById('mainUI').style.display = 'none';
+  document.getElementById('userInfo').style.display = 'none';
+  showMsg('Logged out. Enter a new ARL cookie to reconnect.', 'ok');
+}
+
+function onQualityChange() {
+  // Reload current track at new quality if playing
+  if (currentTracks.length && currentTrackIdx >= 0) {
+    const wasPlaying = playing;
+    const currentTime = audio.currentTime;
+    playTrackByIndex(currentTrackIdx);
+    audio.addEventListener('loadedmetadata', function restore() {
+      audio.currentTime = Math.min(currentTime, audio.duration || 0);
+      if (wasPlaying) audio.play().catch(() => {});
+      audio.removeEventListener('loadedmetadata', restore);
+    });
+  }
+}
+
+async function playTrackByIndex(idx) {
+  if (!currentTracks[idx]) return;
+  currentTrackIdx = idx;
+  const track = currentTracks[idx];
+  try {
+    // Use the stream proxy endpoint with selected quality
+    const q = document.getElementById('qualitySelect')?.value || '3';
+    audio.src = '/api/stream/' + track.id + '?quality=' + q;
+    audio.play().catch(() => {});
+    playing = true;
+    updatePlayIcon();
+  } catch (e) {
+    console.error('Stream failed:', e);
+  }
+  renderTrackList();
+}
+
+/* ── Track end → auto advance ─────────────────────────── */
+function onTrackEnd() {
+  currentTrackIdx++;
+  if (currentTrackIdx < currentTracks.length) {
+    playTrackByIndex(currentTrackIdx);
+  } else {
+    // Album finished → next in queue
+    skipAlbum();
+  }
+}
+
+/* ── Now Playing ─────────────────────────────────────── */
+function updateNowPlaying(album) {
+  const np = document.getElementById('nowPlaying');
+  np.classList.remove('hid');
+  const img = album.cover_medium || album.cover || '';
+  document.getElementById('npArt').src = img;
+  document.getElementById('npTtl').textContent = album.title || '—';
+  document.getElementById('npArtName').textContent = album.artist ? album.artist.name : '—';
+  const coverBig = album.cover_big || album.cover_medium || album.cover || '';
+  document.getElementById('drArt').src = coverBig;
+  document.getElementById('drTtl').textContent = album.title || '—';
+  document.getElementById('drArtName').textContent = album.artist ? album.artist.name : '—';
+}
+
+function updatePlayIcon() {
+  const icon = document.getElementById('npPlayIcon');
+  if (playing) {
+    icon.innerHTML = '<path d="M6 4h4v16H6zm8 0h4v16h-4z"/>';
+  } else {
+    icon.innerHTML = '<path d="M8 5v14l11-7z"/>';
+  }
+}
+
+function togglePlay() {
+  if (playing) audio.pause();
+  else audio.play().catch(() => {});
+}
+
+/* ── Drawer ──────────────────────────────────────────── */
+function openDrawer() {
+  document.getElementById('drBk').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+}
+
+function closeDrawer() {
+  document.getElementById('drBk').classList.remove('open');
+  document.getElementById('drawer').classList.remove('open');
+}
+
+/* ── UI Helpers ──────────────────────────────────────── */
+function updateStats() {
+  const el = document.getElementById('stats');
+  const total = allAlbums.length;
+  const shown = filtered.length;
+  if (total === shown) el.textContent = total + ' album' + (total !== 1 ? 's' : '');
+  else el.textContent = shown + ' of ' + total + ' albums';
+}
+
+/* ── Init ────────────────────────────────────────────── */
+checkAuth();
+// Periodic ARL validity check every 5 min
+setInterval(async () => {
+  if (!authenticated) return;
+  try {
+    const status = await api('status');
+    if (!status.valid) {
+      authenticated = false;
+      document.getElementById('arlPanel').style.display = '';
+      document.getElementById('mainUI').style.display = 'none';
+      showMsg('⚠️ ARL cookie expired. Please paste a fresh one.', 'err');
+    }
+  } catch {}
+}, 5 * 60 * 1000);
+
+</script>
+</body>
+</html>
