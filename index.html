@@ -125,6 +125,16 @@ input{font-family:inherit}
 .err{background:rgba(255,60,60,.12);border:1px solid rgba(255,60,60,.3);border-radius:var(--rads);padding:14px 18px;color:#ff6b6b;margin-bottom:20px;font-size:.88rem}
 .ok{background:rgba(76,175,80,.12);border:1px solid rgba(76,175,80,.3);border-radius:var(--rads);padding:14px 18px;color:#4caf50;margin-bottom:20px;font-size:.88rem}
 
+.tabs{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--bdr);padding-bottom:0}
+.tab{padding:10px 20px;font-size:.9rem;font-weight:600;color:var(--tm);border:none;border-bottom:2px solid transparent;cursor:pointer;transition:all var(--tr);background:none}
+.tab:hover{color:var(--t1)}
+.tab.active{color:var(--ac);border-bottom-color:var(--ac)}
+.like-btn{position:absolute;top:8px;right:8px;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity var(--tr);z-index:2}
+.acard:hover .like-btn{opacity:1}
+.like-btn:hover{background:rgba(162,56,255,.7)}
+.like-btn.liked{opacity:1;background:var(--ac)}
+.like-btn svg{width:16px;height:16px;fill:#fff}
+
 @media(max-width:600px){
   .agrid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px}
   .hdr{padding:8px 0 14px}
@@ -180,7 +190,15 @@ input{font-family:inherit}
 
   <!-- Main UI (hidden until authenticated) -->
   <div id="mainUI" style="display:none">
-    <div class="sbar">
+    <!-- Tab bar -->
+  <div class="tabs" id="tabBar" style="display:none">
+    <button class="tab active" data-tab="library" onclick="switchTab('library')">Library</button>
+    <button class="tab" data-tab="releases" onclick="switchTab('releases')">New Releases</button>
+  </div>
+
+  <!-- Library panel -->
+  <div id="libraryPanel">
+  <div class="sbar">
       <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <input type="text" id="searchInput" placeholder="Filter by artist or genre…" oninput="filterAlbums()">
     </div>
@@ -208,8 +226,19 @@ input{font-family:inherit}
     <div id="gridWrap">
       <div class="empty">Loading albums…</div>
     </div>
+  </div><!-- /libraryPanel -->
+
+  <!-- New Releases panel -->
+  <div id="releasesPanel" style="display:none">
+    <div class="ctrl-row" style="margin-bottom:12px">
+      <div class="stats" id="releasesStats"></div>
+      <button class="cb" title="Refresh" onclick="refreshNewReleases()" style="width:36px;height:36px"><svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></button>
+    </div>
+    <div id="releasesLoading" class="ldg" style="display:none"><div class="spn"></div>Loading new releases… This may take a minute on first load.</div>
+    <div id="releasesEmpty" class="empty" style="display:none">No new releases in the last 30 days from your followed artists.</div>
+    <div id="releasesGrid"></div>
   </div>
-</div>
+</div><!-- /mainUI -->
 
 <!-- Now playing bar -->
 <div class="np hid" id="nowPlaying">
@@ -271,6 +300,9 @@ let currentTracks = [];
 let currentTrackIdx = 0;
 let playing = false;
 let authenticated = false;
+let activeTab = 'library';
+let newReleases = [];
+let releasesQueue = [];
 
 const audio = document.getElementById('audioPlayer');
 
@@ -307,6 +339,7 @@ async function setArl() {
       authenticated = true;
       document.getElementById('arlPanel').style.display = 'none';
       document.getElementById('mainUI').style.display = '';
+      document.getElementById('tabBar').style.display = '';
       const isPrem = status.user?.premium; showMsg('Connected as ' + (status.user?.name || 'Unknown') + (isPrem ? '' : ' — Free account: 30s previews only'), isPrem ? 'ok' : 'err');
       document.getElementById('userInfo').style.display = '';
       document.getElementById('userName').textContent = status.user?.name || '';
@@ -327,6 +360,7 @@ async function checkAuth() {
       authenticated = true;
       document.getElementById('arlPanel').style.display = 'none';
       document.getElementById('mainUI').style.display = '';
+      document.getElementById('tabBar').style.display = '';
       document.getElementById('userInfo').style.display = '';
       document.getElementById('userName').textContent = status.user?.name || '';
       document.getElementById('statusDot').className = 'dot';
@@ -448,9 +482,15 @@ function shuffleArr(arr) {
 }
 
 function skipAlbum() {
-  if (!queue.length && !allAlbums.length) return;
-  if (!queue.length) queue = shuffleArr([...allAlbums]);
-  const album = queue.shift();
+  const src = activeTab === 'releases' ? releasesQueue : queue;
+  const pool = activeTab === 'releases' ? newReleases : allAlbums;
+  if (!src.length && !pool.length) return;
+  if (!src.length) {
+    if (activeTab === 'releases') releasesQueue = shuffleArr([...pool]);
+    else queue = shuffleArr([...pool]);
+  }
+  const q = activeTab === 'releases' ? releasesQueue : queue;
+  const album = q.shift();
   if (currentAlbum) history.push(currentAlbum);
   playAlbum(album);
   refillQueue();
@@ -459,28 +499,37 @@ function skipAlbum() {
 
 function playPrevious() {
   if (!history.length) return;
-  if (currentAlbum) queue.unshift(currentAlbum);
+  const q = activeTab === 'releases' ? releasesQueue : queue;
+  if (currentAlbum) q.unshift(currentAlbum);
   const album = history.pop();
   playAlbum(album);
   renderQueue();
 }
 
 function refillQueue() {
-  while (queue.length < 5 && allAlbums.length) {
-    queue = queue.concat(shuffleArr([...allAlbums]));
+  if (activeTab === 'releases') {
+    while (releasesQueue.length < 5 && newReleases.length) {
+      releasesQueue = releasesQueue.concat(shuffleArr([...newReleases]));
+    }
+  } else {
+    while (queue.length < 5 && allAlbums.length) {
+      queue = queue.concat(shuffleArr([...allAlbums]));
+    }
   }
 }
 
 function renderQueue() {
   const el = document.getElementById('queueList');
   const sec = document.getElementById('queueSec');
-  const show = queue.slice(0, 5);
+  const src = activeTab === 'releases' ? releasesQueue : queue;
+  const show = src.slice(0, 5);
   if (!show.length) { sec.style.display = 'none'; return; }
   sec.style.display = '';
   let html = '';
+  const playFn = activeTab === 'releases' ? 'playReleaseById' : 'playAlbumById';
   for (const a of show) {
     const img = a.cover_medium || a.cover || '';
-    html += `<div class="qi" onclick="playAlbumById(${a.id})">
+    html += `<div class="qi" onclick="${playFn}(${a.id})">
       <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
       <div class="qt">${escHtml(a.title)}</div>
     </div>`;
@@ -579,9 +628,13 @@ function logout() {
   audio.src = '';
   document.getElementById('arlPanel').style.display = '';
   document.getElementById('mainUI').style.display = 'none';
+  document.getElementById('tabBar').style.display = 'none';
   document.getElementById('userInfo').style.display = 'none';
   showMsg('Logged out. Enter a new ARL cookie to reconnect.', 'ok');
   document.title = 'Deezer Album Shuffle';
+  activeTab = 'library';
+  newReleases = [];
+  releasesQueue = [];
 }
 
 function onQualityChange() {
@@ -676,7 +729,95 @@ function closeDrawer() {
   document.getElementById('drawer').classList.remove('open');
 }
 
-/* ── UI Helpers ──────────────────────────────────────── */
+/* ── Tab switching ──────────────────────────────────── */
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.getElementById('libraryPanel').style.display = tab === 'library' ? '' : 'none';
+  document.getElementById('releasesPanel').style.display = tab === 'releases' ? '' : 'none';
+  if (tab === 'releases' && !newReleases.length) fetchNewReleases();
+}
+
+async function fetchNewReleases() {
+  const loading = document.getElementById('releasesLoading');
+  const empty = document.getElementById('releasesEmpty');
+  const grid = document.getElementById('releasesGrid');
+  const stats = document.getElementById('releasesStats');
+  loading.style.display = '';
+  empty.style.display = 'none';
+  grid.innerHTML = '';
+  stats.textContent = '';
+  try {
+    const d = await api('new-releases' + (newReleases.length ? '?refresh=1' : ''));
+    if (d.error) throw new Error(d.error);
+    newReleases = d.data || [];
+    loading.style.display = 'none';
+    if (!newReleases.length) { empty.style.display = ''; return; }
+    stats.textContent = newReleases.length + ' new release' + (newReleases.length !== 1 ? 's' : '') + ' in the last 30 days';
+    renderReleasesGrid(newReleases);
+    releasesQueue = shuffleArr([...newReleases]);
+  } catch (e) {
+    loading.style.display = 'none';
+    showMsg('Failed to load new releases: ' + e.message, 'err');
+  }
+}
+
+function refreshNewReleases() {
+  newReleases = [];
+  releasesQueue = [];
+  fetchNewReleases();
+}
+
+function renderReleasesGrid(albums) {
+  const grid = document.getElementById('releasesGrid');
+  let html = '<div class="agrid">';
+  for (const a of albums) {
+    const active = currentAlbum && currentAlbum.id === a.id ? ' active' : '';
+    const img = a.cover_medium || a.cover || '';
+    const dateStr = a.release_date ? new Date(a.release_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+    html += `<div class="acard${active}" data-id="${a.id}" onclick="playReleaseById(${a.id})">
+      <button class="like-btn" title="Add to library" onclick="event.stopPropagation(); addAlbumToLibrary(${a.id}, this)"><svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
+      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <div class="pov"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+      <div class="inf"><div class="ttl">${escHtml(a.title)}</div><div class="art">${escHtml(a.artist ? a.artist.name : '')}</div>
+      <div class="art" style="margin-top:2px;font-size:.65rem;color:var(--tm)">${dateStr}${a.nb_tracks ? ' · ' + a.nb_tracks + ' tracks' : ''}</div></div>
+    </div>`;
+  }
+  html += '</div>';
+  grid.innerHTML = html;
+}
+
+async function addAlbumToLibrary(albumId, btn) {
+  btn.classList.add('liked');
+  btn.title = 'Added!';
+  try {
+    await fetch('/api/add-album/' + albumId, { method: 'POST' });
+    const card = btn.closest('.acard');
+    if (card) { card.style.transition = 'opacity .3s, transform .3s'; card.style.opacity = '0'; card.style.transform = 'scale(.9)'; setTimeout(() => card.remove(), 300); }
+    newReleases = newReleases.filter(a => a.id !== albumId);
+    if (!newReleases.length) {
+      document.getElementById('releasesGrid').innerHTML = '';
+      document.getElementById('releasesEmpty').style.display = '';
+    }
+  } catch (e) {
+    btn.classList.remove('liked');
+    btn.title = 'Add to library';
+    showMsg('Failed to add album: ' + e.message, 'err');
+  }
+}
+
+async function playReleaseById(id) {
+  const album = newReleases.find(a => a.id === id);
+  if (!album) return;
+  if (currentAlbum) history.push(currentAlbum);
+  const idx = releasesQueue.findIndex(a => a.id === id);
+  if (idx >= 0) releasesQueue.splice(idx, 1);
+  await playAlbum(album);
+  if (releasesQueue.length < 5 && newReleases.length) {
+    releasesQueue = shuffleArr(newReleases.filter(a => a.id !== album.id));
+  }
+  renderQueue();
+}
 function updateStats() {
   const el = document.getElementById('stats');
   const total = allAlbums.length;
