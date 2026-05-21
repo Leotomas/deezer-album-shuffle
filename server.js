@@ -1,3 +1,16 @@
+// Self-restart with --openssl-legacy-provider if needed (for BF-CBC decryption)
+if (!process.execArgv.includes('--openssl-legacy-provider')) {
+  const { spawn } = require('child_process');
+  console.log('Restarting with --openssl-legacy-provider…');
+  const child = spawn(process.argv[0], ['--openssl-legacy-provider', ...process.argv.slice(1)], {
+    stdio: 'inherit',
+    env: process.env,
+    detached: true,
+  });
+  child.unref();
+  process.exit(0);
+}
+
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
