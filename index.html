@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Deezer Album Shuffle</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -580,6 +581,7 @@ function logout() {
   document.getElementById('mainUI').style.display = 'none';
   document.getElementById('userInfo').style.display = 'none';
   showMsg('Logged out. Enter a new ARL cookie to reconnect.', 'ok');
+  document.title = 'Deezer Album Shuffle';
 }
 
 function onQualityChange() {
@@ -607,6 +609,7 @@ async function playTrackByIndex(idx) {
     audio.play().catch(() => {});
     playing = true;
     updatePlayIcon();
+    updateTitle();
   } catch (e) {
     console.error('Stream failed:', e);
   }
@@ -636,6 +639,16 @@ function updateNowPlaying(album) {
   document.getElementById('drArt').src = coverBig;
   document.getElementById('drTtl').textContent = album.title || '—';
   document.getElementById('drArtName').textContent = album.artist ? album.artist.name : '—';
+  updateTitle();
+}
+
+function updateTitle() {
+  const track = currentTracks[currentTrackIdx];
+  if (track && currentAlbum) {
+    document.title = track.title + ' - ' + (track.artist?.name || currentAlbum.artist?.name || '') + ' - ' + currentAlbum.title;
+  } else {
+    document.title = 'Deezer Album Shuffle';
+  }
 }
 
 function updatePlayIcon() {
