@@ -1,5 +1,6 @@
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
@@ -37,6 +38,45 @@ function cookieHeader() {
   if (DZR_UNIQ_ID) c += '; dzr_uniq_id=' + DZR_UNIQ_ID;
   if (FAMILY_USER_ID) c += '; familyUserId=' + FAMILY_USER_ID;
   return c;
+}
+
+// ── Deezer Decryption ───────────────────────────────
+const BF_SECRET = 'g4el58wc0zvf9na1';
+
+function md5Hex(data) {
+  return crypto.createHash('md5').update(data.toString()).digest('hex');
+}
+
+function getBlowfishKey(trackId) {
+  const idMd5 = md5Hex(trackId);
+  let key = '';
+  for (let i = 0; i < 16; i++) {
+    key += String.fromCharCode(idMd5.charCodeAt(i) ^ idMd5.charCodeAt(i + 16) ^ BF_SECRET.charCodeAt(i));
+  }
+  return key;
+}
+
+function decryptChunk(chunk, bfKey) {
+  const decipher = crypto.createDecipheriv('bf-cbc', bfKey, Buffer.from([0,1,2,3,4,5,6,7]));
+  decipher.setAutoPadding(false);
+  return Buffer.concat([decipher.update(chunk), decipher.final()]);
+}
+
+function decryptBuffer(source, trackId) {
+  const bfKey = getBlowfishKey(trackId);
+  const CHUNK_SIZE = 2048;
+  const dest = Buffer.alloc(source.length);
+  let pos = 0;
+  let i = 0;
+  while (pos < source.length) {
+    const size = Math.min(CHUNK_SIZE, source.length - pos);
+    const chunk = source.slice(pos, pos + size);
+    const decrypted = (i % 3 === 0 && size === CHUNK_SIZE) ? decryptChunk(chunk, bfKey) : chunk;
+    decrypted.copy(dest, pos);
+    pos += size;
+    i++;
+  }
+  return dest;
 }
 
 // ── Deezer Gateway API ───────────────────────────────
@@ -255,6 +295,14 @@ async function getTrackStreamUrl(trackId, quality = 1) {
   throw new Error('No stream available');
 }
 
+function parseRange(rangeHeader, totalLength) {
+  const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+  if (!m) return { start: 0, end: totalLength - 1 };
+  const start = parseInt(m[1]);
+  const end = m[2] ? parseInt(m[2]) : totalLength - 1;
+  return { start, end: Math.min(end, totalLength - 1) };
+}
+
 // ── HTTP Helpers ─────────────────────────────────────
 function jsonRes(res, code, data) {
   res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -407,18 +455,52 @@ async function handleAPI(req, res, pathname, query) {
           const parsed = new URL(streamInfo.url);
           const opts = {
             hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'GET',
-            headers: { 'User-Agent': BROWSER_UA, 'Range': req.headers.range || 'bytes=0-' }
+            headers: { 'User-Agent': BROWSER_UA }
           };
-          const proxyReq = https.request(opts, proxyRes => {
-            const h = { 'Content-Type': proxyRes.headers['content-type'] || 'audio/mpeg', 'Access-Control-Allow-Origin': '*' };
-            if (proxyRes.headers['content-length']) h['Content-Length'] = proxyRes.headers['content-length'];
-            if (proxyRes.headers['content-range']) h['Content-Range'] = proxyRes.headers['content-range'];
-            if (proxyRes.headers['accept-ranges']) h['Accept-Ranges'] = proxyRes.headers['accept-ranges'];
-            res.writeHead(proxyRes.statusCode, h);
-            proxyRes.pipe(res);
-          });
-          proxyReq.on('error', () => jsonRes(res, 500, { error: 'Stream failed' }));
-          proxyReq.end();
+
+          if (streamInfo.encrypted) {
+            // Download entire encrypted file, decrypt, then send
+            const proxyReq = https.request(opts, proxyRes => {
+              const chunks = [];
+              let totalLen = 0;
+              proxyRes.on('data', c => { chunks.push(c); totalLen += c.length; });
+              proxyRes.on('end', () => {
+                const encrypted = Buffer.concat(chunks, totalLen);
+                try {
+                  const decrypted = decryptBuffer(encrypted, trackId);
+                  const h = { 'Content-Type': 'audio/mpeg', 'Content-Length': decrypted.length, 'Access-Control-Allow-Origin': '*', 'Accept-Ranges': 'bytes' };
+                  if (req.headers.range) {
+                    const range = parseRange(req.headers.range, decrypted.length);
+                    h['Content-Range'] = `bytes ${range.start}-${range.end}/${decrypted.length}`;
+                    h['Content-Length'] = range.end - range.start + 1;
+                    res.writeHead(206, h);
+                    res.end(decrypted.slice(range.start, range.end + 1));
+                  } else {
+                    res.writeHead(200, h);
+                    res.end(decrypted);
+                  }
+                } catch (e) {
+                  console.error('Decrypt failed:', e.message);
+                  jsonRes(res, 500, { error: 'Decryption failed' });
+                }
+              });
+            });
+            proxyReq.on('error', () => jsonRes(res, 500, { error: 'Stream download failed' }));
+            proxyReq.end();
+          } else {
+            // Not encrypted — proxy directly
+            if (req.headers.range) opts.headers['Range'] = req.headers.range;
+            const proxyReq = https.request(opts, proxyRes => {
+              const h = { 'Content-Type': proxyRes.headers['content-type'] || 'audio/mpeg', 'Access-Control-Allow-Origin': '*' };
+              if (proxyRes.headers['content-length']) h['Content-Length'] = proxyRes.headers['content-length'];
+              if (proxyRes.headers['content-range']) h['Content-Range'] = proxyRes.headers['content-range'];
+              if (proxyRes.headers['accept-ranges']) h['Accept-Ranges'] = proxyRes.headers['accept-ranges'];
+              res.writeHead(proxyRes.statusCode, h);
+              proxyRes.pipe(res);
+            });
+            proxyReq.on('error', () => jsonRes(res, 500, { error: 'Stream failed' }));
+            proxyReq.end();
+          }
           return;
         }
         jsonRes(res, 404, { error: 'No stream URL' });
