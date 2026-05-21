@@ -213,12 +213,12 @@ input{font-family:inherit}
 <!-- Now playing bar -->
 <div class="np hid" id="nowPlaying">
   <img class="np-art" id="npArt" alt="">
-  <div class="np-info" onclick="openDrawer()">
-    <div class="np-ttl" id="npTtl">—</div>
-    <div class="np-artname" id="npArtName">—</div>
+  <div class="np-info">
+    <div class="np-ttl" id="npTtl" onclick="openDrawer()">—</div>
+    <div class="np-artname" id="npArtName" onclick="openDrawer()">—</div>
     <div class="np-timeline">
       <span class="np-time" id="npElapsed">0:00</span>
-      <div class="np-bar" id="npProgressBar" onclick="seekTo(event)">
+      <div class="np-bar" id="npProgressBar" onclick="event.stopPropagation(); seekTo(event)">
         <div class="np-fill" id="npProgress" style="width:0%"></div>
       </div>
       <span class="np-time" id="npRemaining">-0:00</span>
