@@ -227,7 +227,7 @@ async function getUser() {
 }
 
 // Public API (for album library, uses ARL cookie for auth)
-function deezerPublicGet(apiPath) {
+function deezerPublicGet(apiPath, retries = 2) {
   return new Promise((resolve, reject) => {
     const opts = {
       hostname: 'api.deezer.com',
@@ -238,7 +238,17 @@ function deezerPublicGet(apiPath) {
     const req = https.request(opts, res => {
       let data = '';
       res.on('data', c => data += c);
-      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON from public API')); } });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          // Retry on rate limit
+          if (parsed.error && parsed.error.code === 4 && retries > 0) {
+            setTimeout(() => deezerPublicGet(apiPath, retries - 1).then(resolve, reject), 1000);
+            return;
+          }
+          resolve(parsed);
+        } catch { reject(new Error('Invalid JSON from public API')); }
+      });
     });
     req.on('error', reject);
     req.end();
@@ -582,7 +592,7 @@ const NR_CACHE_TTL = 60 * 60 * 1000;
             const albPage = r.value;
             const artistInfo = batch[ri];
             for (const a of (albPage.data || [])) {
-              const type = (a.type || a.record_type || '').toLowerCase();
+              const type = (a.record_type || a.type || '').toLowerCase();
               if (type === 'single') continue;
               const nb = a.nb_tracks || a.track_count || 0;
               if (nb > 0 && nb < 3) continue;
@@ -598,21 +608,12 @@ const NR_CACHE_TTL = 60 * 60 * 1000;
               });
             }
           }
-          if (i + BATCH < allArtists.length) await sleep(200); // rate limit cushion
+          if (i + BATCH < allArtists.length) await sleep(1000); // rate limit cushion
         }
         const newReleases = [...albumMap.values()].sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
-        // Enrich with track count + artist name (sequential to avoid rate limits)
-        for (let i = 0; i < newReleases.length; i++) {
-          try {
-            const detail = await deezerPublicGet(`/album/${newReleases[i].id}`);
-            if (detail.error) { console.log('Enrich API error for album', newReleases[i].id, detail.error); continue; }
-            if (detail.nb_tracks) newReleases[i].nb_tracks = detail.nb_tracks;
-            if (!newReleases[i].artist.name && detail.artist) newReleases[i].artist.name = detail.artist.name;
-            if (!newReleases[i].artist.id && detail.artist) newReleases[i].artist.id = detail.artist.id;
-          } catch (e) { /* skip on error */ }
-        }
-        // Re-filter: only keep albums with 3+ tracks
-        const filtered = newReleases.filter(a => a.nb_tracks >= 3);
+        // No server-side enrichment — too many rate limit failures.
+        // Frontend enriches lazily via /api/album-detail/:id
+        const filtered = newReleases;
         _nrCache = { data: filtered };
         _nrCacheTime = Date.now();
         jsonRes(res, 200, _nrCache);
@@ -628,6 +629,26 @@ const NR_CACHE_TTL = 60 * 60 * 1000;
         _nrCache = null; // Invalidate cache since library changed
         jsonRes(res, 200, { ok: true });
       } catch (e) { jsonRes(res, 500, { error: 'Add album failed: ' + e.message }); }
+      return;
+    }
+
+    // Album detail (lazy enrichment for new releases)
+    if (pathname.startsWith('/api/album-detail/') && req.method === 'GET') {
+      const albumId = pathname.split('/')[3];
+      try {
+        const detail = await deezerPublicGet(`/album/${albumId}`);
+        if (detail.error) { jsonRes(res, 500, detail); return; }
+        jsonRes(res, 200, {
+          id: detail.id,
+          title: detail.title,
+          artist: detail.artist ? { id: detail.artist.id, name: detail.artist.name } : {},
+          nb_tracks: detail.nb_tracks || 0,
+          record_type: detail.record_type || '',
+          release_date: detail.release_date || '',
+          cover_medium: detail.cover_medium || '',
+          cover_big: detail.cover_big || ''
+        });
+      } catch (e) { jsonRes(res, 500, { error: e.message }); }
       return;
     }
 

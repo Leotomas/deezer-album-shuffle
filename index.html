@@ -780,11 +780,58 @@ function renderReleasesGrid(albums) {
       <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
       <div class="pov"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
       <div class="inf"><div class="ttl">${escHtml(a.title)}</div><div class="art">${escHtml(a.artist ? a.artist.name : '')}</div>
-      <div class="art" style="margin-top:2px;font-size:.65rem;color:var(--tm)">${dateStr}${a.nb_tracks ? ' · ' + a.nb_tracks + ' tracks' : ''}</div></div>
+      <div class="art" style="margin-top:2px;font-size:.65rem;color:var(--tm)" data-tracks="${a.id}">${dateStr}${a.nb_tracks ? ' · ' + a.nb_tracks + ' tracks' : ''}</div></div>
     </div>`;
   }
   html += '</div>';
   grid.innerHTML = html;
+  // Lazy enrich: fetch album details one-by-one to update track counts and filter singles
+  enrichReleasesLazy(albums);
+}
+
+async function enrichReleasesLazy(albums) {
+  for (const a of albums) {
+    if (a.record_type && a.record_type === 'single') {
+      // Remove singles from the grid
+      const card = document.querySelector(`.acard[data-id="${a.id}"]`);
+      if (card) card.remove();
+      newReleases = newReleases.filter(r => r.id !== a.id);
+      continue;
+    }
+    if (a.nb_tracks && a.nb_tracks >= 3) continue; // already enriched
+    try {
+      const d = await fetch('/api/album-detail/' + a.id).then(r => r.json());
+      if (d.error) continue;
+      if (d.record_type === 'single') {
+        // Remove single from grid
+        const card = document.querySelector(`.acard[data-id="${a.id}"]`);
+        if (card) card.remove();
+        newReleases = newReleases.filter(r => r.id !== a.id);
+        continue;
+      }
+      if (d.nb_tracks && d.nb_tracks < 3) {
+        // Remove EPs/albums with < 3 tracks
+        const card = document.querySelector(`.acard[data-id="${a.id}"]`);
+        if (card) card.remove();
+        newReleases = newReleases.filter(r => r.id !== a.id);
+        continue;
+      }
+      // Update card in-place
+      a.nb_tracks = d.nb_tracks;
+      a.record_type = d.record_type;
+      const trackEl = document.querySelector(`[data-tracks="${a.id}"]`);
+      if (trackEl && d.nb_tracks) {
+        const dateStr = a.release_date ? new Date(a.release_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+        trackEl.textContent = dateStr + ' · ' + d.nb_tracks + ' tracks';
+      }
+      await new Promise(r => setTimeout(r, 300)); // rate limit
+    } catch (e) { /* skip */ }
+  }
+  // Update stats after filtering
+  const stats = document.getElementById('releasesStats');
+  if (stats && newReleases.length) {
+    stats.textContent = newReleases.length + ' new release' + (newReleases.length !== 1 ? 's' : '') + ' in the last 30 days';
+  }
 }
 
 async function addAlbumToLibrary(albumId, btn) {
