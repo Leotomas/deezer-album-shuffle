@@ -359,7 +359,7 @@ async function fetchAlbums() {
       start += items.length;
       hasMore = d.hasMore && items.length >= batchSize;
     }
-    filtered = [...allAlbums];
+    filtered = shuffleArr([...allAlbums]);
     updateStats();
     renderGrid(filtered);
   } catch (e) {
