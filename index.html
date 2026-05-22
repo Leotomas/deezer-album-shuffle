@@ -114,6 +114,8 @@ input{font-family:inherit}
 .ti{display:flex;align-items:center;gap:12px;padding:10px 20px;cursor:pointer;transition:background var(--tr)}
 .ti:hover{background:var(--acg)}
 .ti.act{color:var(--ac)}
+.ti.unavail{opacity:.45;cursor:not-allowed}
+.ti.unavail:hover{background:transparent}
 .tn{width:28px;text-align:center;font-size:.8rem;color:var(--tm);flex-shrink:0}
 .tt{flex:1;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .td{font-size:.78rem;color:var(--tm);flex-shrink:0}
@@ -292,6 +294,7 @@ input{font-family:inherit}
 <script>
 /* ── State ───────────────────────────────────────────── */
 let allAlbums = [];
+let unavailableAlbums = new Set(); // Album IDs that can't be streamed
 let filtered = [];
 let queue = [];
 let history = [];
@@ -309,7 +312,13 @@ const audio = document.getElementById('audioPlayer');
 audio.addEventListener('play', () => { playing = true; updatePlayIcon(); });
 audio.addEventListener('pause', () => { playing = false; updatePlayIcon(); });
 audio.addEventListener('ended', onTrackEnd);
-audio.addEventListener('error', () => { playing = false; updatePlayIcon(); });
+audio.addEventListener('error', () => {
+  playing = false; updatePlayIcon();
+  // Check if this is a streaming error (not available)
+  if (audio.src && audio.src.includes('/api/stream/')) {
+    showMsg('Track not available for streaming', 'err');
+  }
+});
 audio.addEventListener('timeupdate', updateTimeline);
 audio.addEventListener('loadedmetadata', () => { updateTimeline(); });
 
@@ -447,13 +456,45 @@ function renderGrid(albums) {
     const active = currentAlbum && currentAlbum.id === a.id ? ' active' : '';
     const img = a.cover_medium || a.cover || '';
     html += `<div class="acard${active}" data-id="${a.id}" onclick="playAlbumById(${a.id})">
-      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy" onerror="fixCover(this, ${a.id})">
       <div class="pov"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
       <div class="inf"><div class="ttl">${escHtml(a.title)}</div><div class="art">${escHtml(a.artist ? a.artist.name : '')}</div></div>
     </div>`;
   }
   html += '</div>';
   wrap.innerHTML = html;
+}
+
+/* ── Fix broken cover images ──────────────────────────────── */
+const _coverFixCache = {};
+function fixCover(img, albumId, size) {
+  if (_coverFixCache[albumId]) { img.src = size === 'big' ? _coverFixCache[albumId].big : _coverFixCache[albumId].medium; return; }
+  img.onerror = null; // prevent loop
+  fetch('/api/fix-cover/' + albumId).then(r => r.json()).then(d => {
+    if (d.cover_medium || d.cover_big) {
+      _coverFixCache[albumId] = { medium: d.cover_medium, big: d.cover_big };
+      img.src = size === 'big' ? d.cover_big : d.cover_medium;
+      // Also update album data in memory
+      const album = allAlbums.find(a => a.id == albumId);
+      if (album) { album.cover_medium = d.cover_medium; album.cover_big = d.cover_big; album.cover = d.cover_medium; }
+    }
+  }).catch(() => {});
+}
+
+/* ── Toast messages ──────────────────────────────── */
+function showMsg(text, type) {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'toast';
+    el.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:8px;z-index:9999;font-size:14px;opacity:0;transition:opacity .3s';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.style.background = type === 'err' ? '#c0392b' : '#2ecc71';
+  el.style.color = '#fff';
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 3000);
 }
 
 function escHtml(s) {
@@ -530,7 +571,7 @@ function renderQueue() {
   for (const a of show) {
     const img = a.cover_medium || a.cover || '';
     html += `<div class="qi" onclick="${playFn}(${a.id})">
-      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy" onerror="fixCover(this, ${a.id})">
       <div class="qt">${escHtml(a.title)}</div>
     </div>`;
   }
@@ -569,6 +610,10 @@ async function fetchAndRenderTracks(albumId) {
   try {
     const d = await api('album/' + albumId + '/tracks?limit=100');
     currentTracks = d.data || [];
+    // Check if all tracks are unavailable
+    const allUnavail = currentTracks.length > 0 && currentTracks.every(t => t.status === 3 || t.status === 0);
+    if (allUnavail) unavailableAlbums.add(Number(albumId));
+    else unavailableAlbums.delete(Number(albumId));
     renderTrackList();
   } catch (e) {
     currentTracks = [];
@@ -586,9 +631,11 @@ function renderTrackList() {
   currentTracks.forEach((t, i) => {
     const dur = t.duration ? formatDur(t.duration) : '';
     const act = i === currentTrackIdx ? ' act' : '';
-    html += `<div class="ti${act}" data-idx="${i}" onclick="playTrackByIndex(${i})">
+    const unavail = (t.status === 3 || t.status === 0) ? ' unavail' : '';
+    const label = unavail ? ' 🔒' : '';
+    html += `<div class="ti${act}${unavail}" data-idx="${i}" onclick="playTrackByIndex(${i})">
       <span class="tn">${i + 1}</span>
-      <span class="tt">${escHtml(t.title)}</span>
+      <span class="tt">${escHtml(t.title)}${label}</span>
       <span class="td">${dur}</span>
     </div>`;
   });
@@ -655,6 +702,12 @@ async function playTrackByIndex(idx) {
   if (!currentTracks[idx]) return;
   currentTrackIdx = idx;
   const track = currentTracks[idx];
+  // Check if track is unavailable (STATUS 3)
+  if (track.status === 3 || track.status === 0) {
+    showMsg('This track is not available for streaming', 'err');
+    renderTrackList();
+    return;
+  }
   try {
     // Use the stream proxy endpoint with selected quality
     const q = document.getElementById('qualitySelect')?.value || '3';
@@ -686,10 +739,12 @@ function updateNowPlaying(album) {
   np.classList.remove('hid');
   const img = album.cover_medium || album.cover || '';
   document.getElementById('npArt').src = img;
+  document.getElementById('npArt').onerror = function() { if (album.id) fixCover(this, album.id); };
   document.getElementById('npTtl').textContent = album.title || '—';
   document.getElementById('npArtName').textContent = album.artist ? album.artist.name : '—';
   const coverBig = album.cover_big || album.cover_medium || album.cover || '';
   document.getElementById('drArt').src = coverBig;
+  document.getElementById('drArt').onerror = function() { if (album.id) fixCover(this, album.id, 'big'); };
   document.getElementById('drTtl').textContent = album.title || '—';
   document.getElementById('drArtName').textContent = album.artist ? album.artist.name : '—';
   updateTitle();
@@ -777,7 +832,7 @@ function renderReleasesGrid(albums) {
     const dateStr = a.release_date ? new Date(a.release_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
     html += `<div class="acard${active}" data-id="${a.id}" onclick="playReleaseById(${a.id})">
       <button class="like-btn" title="Add to library" onclick="event.stopPropagation(); addAlbumToLibrary(${a.id}, this)"><svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
-      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy" onerror="fixCover(this, ${a.id})">
       <div class="pov"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
       <div class="inf"><div class="ttl">${escHtml(a.title)}</div><div class="art">${escHtml(a.artist ? a.artist.name : '')}</div>
       <div class="art" style="margin-top:2px;font-size:.65rem;color:var(--tm)" data-tracks="${a.id}">${dateStr}${a.nb_tracks ? ' · ' + a.nb_tracks + ' tracks' : ''}</div></div>

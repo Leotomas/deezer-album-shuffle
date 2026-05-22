@@ -265,8 +265,57 @@ async function getTrackStreamUrl(trackId, quality = 1) {
   if (trackData.error && Array.isArray(trackData.error) && trackData.error.length > 0) {
     throw new Error('Track data failed');
   }
-  const trackResults = trackData.results || {};
-  const trackToken = trackResults.TRACK_TOKEN;
+  let trackResults = trackData.results || {};
+  let trackToken = trackResults.TRACK_TOKEN;
+
+  // If track is STATUS 3 (unavailable in region), try to find it via redirected album
+  if (trackResults.STATUS === 3 && trackResults.ALB_ID) {
+    try {
+      const pubAlbum = await deezerPublicGet(`/album/${trackResults.ALB_ID}`);
+      if (pubAlbum.id && pubAlbum.id !== Number(trackResults.ALB_ID)) {
+        // Public API redirected to a different album version
+        const redirectTracks = await gwPost('song.getListByAlbum', { alb_id: String(pubAlbum.id), nb: 300, lang: 'en' });
+        const rTracks = redirectTracks.results?.data || [];
+        const matchTrack = rTracks.find(t =>
+          (t.SNG_TITLE || t.TITLE || '').toLowerCase().trim() === (trackResults.SNG_TITLE || trackResults.TITLE || '').toLowerCase().trim()
+          || t.TRACK_NUMBER === trackResults.TRACK_NUMBER
+        );
+        if (matchTrack && matchTrack.STATUS !== 3 && matchTrack.STATUS !== 0) {
+          const redirectData = await gwPost('song.getData', { sng_id: String(matchTrack.SNG_ID) });
+          if (redirectData.results?.TRACK_TOKEN && redirectData.results.STATUS === 1) {
+            trackResults = redirectData.results;
+            trackToken = redirectData.results.TRACK_TOKEN;
+          }
+        }
+      } else if (pubAlbum.error) {
+        // Album not in public API — search by title and artist
+        const albumInfo = await gwPost('album.getData', { alb_id: String(trackResults.ALB_ID), lang: 'en' });
+        const albumTitle = albumInfo.results?.ALB_TITLE;
+        const artistName = albumInfo.results?.ART_NAME;
+        if (albumTitle && artistName) {
+          const searchResult = await deezerPublicGet(`/search/album?q=${encodeURIComponent(albumTitle + ' ' + artistName)}&limit=5`);
+          const found = (searchResult.data || []).find(a =>
+            a.title.toLowerCase().replace(/[^a-z0-9 ]/g, '') === albumTitle.toLowerCase().replace(/[^a-z0-9 ]/g, '')
+          );
+          if (found && found.id) {
+            const redirectTracks = await gwPost('song.getListByAlbum', { alb_id: String(found.id), nb: 300, lang: 'en' });
+            const rTracks = redirectTracks.results?.data || [];
+            const matchTrack = rTracks.find(t =>
+              (t.SNG_TITLE || t.TITLE || '').toLowerCase().trim() === (trackResults.SNG_TITLE || trackResults.TITLE || '').toLowerCase().trim()
+              || t.TRACK_NUMBER === trackResults.TRACK_NUMBER
+            );
+            if (matchTrack && matchTrack.STATUS !== 3 && matchTrack.STATUS !== 0) {
+              const redirectData = await gwPost('song.getData', { sng_id: String(matchTrack.SNG_ID) });
+              if (redirectData.results?.TRACK_TOKEN && redirectData.results.STATUS === 1) {
+                trackResults = redirectData.results;
+                trackToken = redirectData.results.TRACK_TOKEN;
+              }
+            }
+          }
+        }
+      }
+    } catch (e) { /* fall through with original track */ }
+  }
 
   if (!trackToken) throw new Error('No track token');
 
@@ -293,7 +342,12 @@ async function getTrackStreamUrl(trackId, quality = 1) {
               const parsed = JSON.parse(data);
               const mediaUrl = parsed.data?.[0]?.media?.[0]?.sources?.[0]?.url;
               if (mediaUrl) resolve(mediaUrl);
-              else reject(new Error('No media URL'));
+              else {
+                // Check for rights error — don't fall back to preview
+                const errCode = parsed.data?.[0]?.errors?.[0]?.code;
+                if (errCode === 2002) reject(new Error('UNAVAILABLE'));
+                else reject(new Error('No media URL'));
+              }
             } catch { reject(new Error('Invalid CDN response')); }
           });
         });
@@ -303,6 +357,7 @@ async function getTrackStreamUrl(trackId, quality = 1) {
       });
       return { url: streamUrl, premium: true, encrypted: streamUrl.includes('/media/') || streamUrl.includes('/mobile/') };
     } catch (e) {
+      if (e.message === 'UNAVAILABLE') throw new Error('Track not available for streaming');
       console.error('Premium stream failed, falling back:', e.message);
     }
   }
@@ -452,10 +507,44 @@ async function handleAPI(req, res, pathname, query) {
       const id = pathname.split('/')[3];
       try {
         const data = await gwPost('song.getListByAlbum', { alb_id: String(id), nb: 300, lang: 'en' });
-        const tracksRaw = data.results?.data || data.results || [];
+        let tracksRaw = data.results?.data || data.results || [];
+        // If all tracks are STATUS 3 (unavailable), try the public API to get the redirected album
+        const allUnavailable = tracksRaw.length > 0 && tracksRaw.every(t => t.STATUS === 3 || t.STATUS === 0);
+        if (allUnavailable) {
+          try {
+            const pubAlbum = await deezerPublicGet(`/album/${id}`);
+            if (pubAlbum.id && pubAlbum.id !== Number(id)) {
+              // Public API redirected to a different album (regional version)
+              const redirectData = await gwPost('song.getListByAlbum', { alb_id: String(pubAlbum.id), nb: 300, lang: 'en' });
+              const redirectTracks = redirectData.results?.data || redirectData.results || [];
+              if (redirectTracks.length > 0 && !redirectTracks.every(t => t.STATUS === 3 || t.STATUS === 0)) {
+                tracksRaw = redirectTracks;
+              }
+            } else if (pubAlbum.error) {
+              // Album not found in public API — search by title and artist
+              const albumInfo = await gwPost('album.getData', { alb_id: String(id), lang: 'en' });
+              const albumTitle = albumInfo.results?.ALB_TITLE;
+              const artistName = albumInfo.results?.ART_NAME;
+              if (albumTitle && artistName) {
+                const searchResult = await deezerPublicGet(`/search/album?q=${encodeURIComponent(albumTitle + ' ' + artistName)}&limit=5`);
+                const found = (searchResult.data || []).find(a =>
+                  a.title.toLowerCase().replace(/[^a-z0-9 ]/g, '') === albumTitle.toLowerCase().replace(/[^a-z0-9 ]/g, '')
+                );
+                if (found && found.id && found.id !== Number(id)) {
+                  const redirectData = await gwPost('song.getListByAlbum', { alb_id: String(found.id), nb: 300, lang: 'en' });
+                  const redirectTracks = redirectData.results?.data || redirectData.results || [];
+                  if (redirectTracks.length > 0 && !redirectTracks.every(t => t.STATUS === 3 || t.STATUS === 0)) {
+                    tracksRaw = redirectTracks;
+                  }
+                }
+              }
+            }
+          } catch (e) { /* fall through with original tracks */ }
+        }
         const tracks = tracksRaw.map(t => ({
           id: t.SNG_ID, title: t.SNG_TITLE || t.TITLE, duration: t.DURATION,
           artist: { id: t.ART_ID, name: t.ART_NAME }, disk_number: t.DISK_NUMBER, track_number: t.TRACK_NUMBER,
+          status: t.STATUS, // 0=not available, 1=available, 3=rights issue
         }));
         jsonRes(res, 200, { data: tracks });
       } catch (e) { jsonRes(res, 500, { error: e.message }); }
@@ -475,6 +564,34 @@ async function handleAPI(req, res, pathname, query) {
           cover_big: r.ALB_PICTURE ? `https://e-cdns-images.dzcdn.net/images/cover/${r.ALB_PICTURE}/500x500-000000-80-0-0.jpg` : '',
           nb_tracks: r.NB_TRACK,
         });
+      } catch (e) { jsonRes(res, 500, { error: e.message }); }
+      return;
+    }
+
+    // Fix broken cover art — fetches correct cover from public album API
+    if (pathname.startsWith('/api/fix-cover/') && req.method === 'GET') {
+      const id = pathname.split('/')[3];
+      try {
+        let detail = await deezerPublicGet(`/album/${id}`);
+        // If public API returns error, search by title+artist
+        if (detail.error || !detail.id) {
+          const albumInfo = await gwPost('album.getData', { alb_id: String(id), lang: 'en' });
+          const albumTitle = albumInfo.results?.ALB_TITLE;
+          const artistName = albumInfo.results?.ART_NAME;
+          if (albumTitle && artistName) {
+            const searchResult = await deezerPublicGet(`/search/album?q=${encodeURIComponent(albumTitle + ' ' + artistName)}&limit=5`);
+            const found = (searchResult.data || []).find(a =>
+              a.title.toLowerCase().replace(/[^a-z0-9 ]/g, '') === albumTitle.toLowerCase().replace(/[^a-z0-9 ]/g, '')
+            );
+            if (found && found.id) {
+              detail = found;
+            }
+          }
+        }
+        if (detail.error || !detail.id) { jsonRes(res, 404, { error: 'Album not found' }); return; }
+        const coverMedium = detail.cover_medium || '';
+        const coverBig = detail.cover_big || '';
+        jsonRes(res, 200, { id: detail.id, cover_medium: coverMedium, cover_big: coverBig, nb_tracks: detail.nb_tracks || 0, record_type: detail.record_type || '' });
       } catch (e) { jsonRes(res, 500, { error: e.message }); }
       return;
     }
