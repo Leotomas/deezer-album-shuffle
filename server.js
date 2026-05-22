@@ -227,7 +227,7 @@ async function getUser() {
 }
 
 // Public API (for album library, uses ARL cookie for auth)
-function deezerPublicGet(apiPath) {
+function deezerPublicGet(apiPath, retries = 2) {
   return new Promise((resolve, reject) => {
     const opts = {
       hostname: 'api.deezer.com',
@@ -238,7 +238,17 @@ function deezerPublicGet(apiPath) {
     const req = https.request(opts, res => {
       let data = '';
       res.on('data', c => data += c);
-      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON from public API')); } });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          // Retry on rate limit
+          if (parsed.error && parsed.error.code === 4 && retries > 0) {
+            setTimeout(() => deezerPublicGet(apiPath, retries - 1).then(resolve, reject), 1000);
+            return;
+          }
+          resolve(parsed);
+        } catch { reject(new Error('Invalid JSON from public API')); }
+      });
     });
     req.on('error', reject);
     req.end();
@@ -531,6 +541,114 @@ async function handleAPI(req, res, pathname, query) {
       } catch (e) {
         jsonRes(res, 500, { error: e.message });
       }
+      return;
+    }
+
+// New-releases cache (TTL 1 hour)
+let _nrCache = null;
+let _nrCacheTime = 0;
+const NR_CACHE_TTL = 60 * 60 * 1000;
+
+    // New Releases - albums from followed artists (last 30 days, 3+ tracks, not singles, not in library)
+    if (pathname === '/api/new-releases') {
+      const noCache = query.refresh === '1';
+      try {
+        if (!noCache && _nrCache && (Date.now() - _nrCacheTime) < NR_CACHE_TTL) {
+          return jsonRes(res, 200, _nrCache);
+        }
+        if (!USER_ID) { const user = await getUser(); USER_ID = user.USER_ID; saveConfig(); }
+        // 1. Fetch followed artists (with pagination)
+        const allArtists = [];
+        let aIdx = 0;
+        while (true) {
+          const ap = await deezerPublicGet(`/user/${USER_ID}/artists?limit=200&index=${aIdx}`);
+          allArtists.push(...(ap.data || []));
+          if (!ap.data || ap.data.length < 200 || allArtists.length >= (ap.total || 0)) break;
+          aIdx += ap.data.length;
+        }
+        // 2. Fetch library album IDs for dedup (parallel-ish, limited concurrency)
+        const libraryIds = new Set();
+        const libFirst = await deezerPublicGet(`/user/${USER_ID}/albums?limit=500&index=0`);
+        const libTotal = libFirst.total || 0;
+        for (const a of (libFirst.data || [])) libraryIds.add(String(a.id));
+        const libPromises = [];
+        for (let i = 500; i < libTotal; i += 500) {
+          libPromises.push(deezerPublicGet(`/user/${USER_ID}/albums?limit=500&index=${i}`));
+        }
+        const libPages = await Promise.all(libPromises);
+        for (const page of libPages) for (const a of (page.data || [])) libraryIds.add(String(a.id));
+        // 3. Fetch recent albums from artists (parallel, batched 5 with delay to avoid rate limits)
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 30);
+        const albumMap = new Map();
+        const BATCH = 5;
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+        for (let i = 0; i < allArtists.length; i += BATCH) {
+          const batch = allArtists.slice(i, i + BATCH);
+          const results = await Promise.allSettled(batch.map(ar => deezerPublicGet(`/artist/${ar.id}/albums?limit=50`)));
+          for (let ri = 0; ri < results.length; ri++) {
+            const r = results[ri];
+            if (r.status !== 'fulfilled') continue;
+            const albPage = r.value;
+            const artistInfo = batch[ri];
+            for (const a of (albPage.data || [])) {
+              const type = (a.record_type || a.type || '').toLowerCase();
+              if (type === 'single') continue;
+              const nb = a.nb_tracks || a.track_count || 0;
+              if (nb > 0 && nb < 3) continue;
+              if (libraryIds.has(String(a.id))) continue;
+              if (!a.release_date) continue;
+              if (new Date(a.release_date) < cutoff) continue;
+              if (albumMap.has(a.id)) continue;
+              albumMap.set(a.id, {
+                id: a.id, title: a.title,
+                artist: { id: a.artist?.id || artistInfo.id, name: a.artist?.name || artistInfo.name || '' },
+                cover_medium: a.cover_medium || '', cover_big: a.cover_big || '', cover: a.cover_medium || a.cover || '',
+                release_date: a.release_date, nb_tracks: nb,
+              });
+            }
+          }
+          if (i + BATCH < allArtists.length) await sleep(1000); // rate limit cushion
+        }
+        const newReleases = [...albumMap.values()].sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
+        // No server-side enrichment — too many rate limit failures.
+        // Frontend enriches lazily via /api/album-detail/:id
+        const filtered = newReleases;
+        _nrCache = { data: filtered };
+        _nrCacheTime = Date.now();
+        jsonRes(res, 200, _nrCache);
+      } catch (e) { jsonRes(res, 500, { error: 'New releases fetch failed: ' + e.message }); }
+      return;
+    }
+
+    // Add album to library
+    if (pathname.startsWith('/api/add-album/') && req.method === 'POST') {
+      const albumId = pathname.split('/')[3];
+      try {
+        await gwPost('album_addFavorite', { alb_id: String(albumId) });
+        _nrCache = null; // Invalidate cache since library changed
+        jsonRes(res, 200, { ok: true });
+      } catch (e) { jsonRes(res, 500, { error: 'Add album failed: ' + e.message }); }
+      return;
+    }
+
+    // Album detail (lazy enrichment for new releases)
+    if (pathname.startsWith('/api/album-detail/') && req.method === 'GET') {
+      const albumId = pathname.split('/')[3];
+      try {
+        const detail = await deezerPublicGet(`/album/${albumId}`);
+        if (detail.error) { jsonRes(res, 500, detail); return; }
+        jsonRes(res, 200, {
+          id: detail.id,
+          title: detail.title,
+          artist: detail.artist ? { id: detail.artist.id, name: detail.artist.name } : {},
+          nb_tracks: detail.nb_tracks || 0,
+          record_type: detail.record_type || '',
+          release_date: detail.release_date || '',
+          cover_medium: detail.cover_medium || '',
+          cover_big: detail.cover_big || ''
+        });
+      } catch (e) { jsonRes(res, 500, { error: e.message }); }
       return;
     }
 
