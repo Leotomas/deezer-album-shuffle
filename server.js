@@ -472,13 +472,23 @@ async function handleAPI(req, res, pathname, query) {
         if (pubData.error) throw new Error(pubData.error.message || pubData.error);
         const albumsRaw = pubData.data || [];
         const total = pubData.total || albumsRaw.length;
-        const albums = albumsRaw.map(a => ({
-          id: a.id, title: a.title,
-          artist: { id: a.artist?.id, name: a.artist?.name },
-          cover_medium: a.cover_medium || '',
-          cover_big: a.cover_big || '',
-          cover: a.cover_medium || a.cover || '',
-        }));
+        // Blank cover hash — Deezer returns this MD5 for albums with no artwork
+        const BLANK_HASH = 'd41d8cd98f00b204e9800998ecf8427e';
+        const albums = albumsRaw.map(a => {
+          let coverMedium = a.cover_medium || '';
+          let coverBig = a.cover_big || '';
+          // Flag blank covers so the frontend knows to fix them
+          const coverBlank = coverMedium.includes(BLANK_HASH) || coverBig.includes(BLANK_HASH);
+          if (coverBlank) { coverMedium = ''; coverBig = ''; }
+          return {
+            id: a.id, title: a.title,
+            artist: { id: a.artist?.id, name: a.artist?.name },
+            cover_medium: coverMedium,
+            cover_big: coverBig,
+            cover: coverMedium || '',
+            cover_blank: coverBlank,
+          };
+        });
         jsonRes(res, 200, { data: albums, total, hasMore: start + albums.length < total });
       } catch (e) { jsonRes(res, 500, { error: 'Albums fetch failed: ' + e.message }); }
       return;
@@ -571,10 +581,13 @@ async function handleAPI(req, res, pathname, query) {
     // Fix broken cover art — fetches correct cover from public album API
     if (pathname.startsWith('/api/fix-cover/') && req.method === 'GET') {
       const id = pathname.split('/')[3];
+      const BLANK_HASH = 'd41d8cd98f00b204e9800998ecf8427e';
       try {
         let detail = await deezerPublicGet(`/album/${id}`);
-        // If public API returns error, search by title+artist
-        if (detail.error || !detail.id) {
+        // Check if returned cover is blank
+        const isBlank = (url) => !url || url.includes(BLANK_HASH);
+        // If public API returns error or blank cover, try search
+        if (detail.error || !detail.id || isBlank(detail.cover_medium)) {
           const albumInfo = await gwPost('album.getData', { alb_id: String(id), lang: 'en' });
           const albumTitle = albumInfo.results?.ALB_TITLE;
           const artistName = albumInfo.results?.ART_NAME;
@@ -582,6 +595,7 @@ async function handleAPI(req, res, pathname, query) {
             const searchResult = await deezerPublicGet(`/search/album?q=${encodeURIComponent(albumTitle + ' ' + artistName)}&limit=5`);
             const found = (searchResult.data || []).find(a =>
               a.title.toLowerCase().replace(/[^a-z0-9 ]/g, '') === albumTitle.toLowerCase().replace(/[^a-z0-9 ]/g, '')
+              && !isBlank(a.cover_medium)
             );
             if (found && found.id) {
               detail = found;
@@ -591,7 +605,7 @@ async function handleAPI(req, res, pathname, query) {
         if (detail.error || !detail.id) { jsonRes(res, 404, { error: 'Album not found' }); return; }
         const coverMedium = detail.cover_medium || '';
         const coverBig = detail.cover_big || '';
-        jsonRes(res, 200, { id: detail.id, cover_medium: coverMedium, cover_big: coverBig, nb_tracks: detail.nb_tracks || 0, record_type: detail.record_type || '' });
+        jsonRes(res, 200, { id: detail.id, cover_medium: coverMedium, cover_big: coverBig, nb_tracks: detail.nb_tracks || 0, record_type: detail.record_type || '', cover_blank: isBlank(coverMedium) });
       } catch (e) { jsonRes(res, 500, { error: e.message }); }
       return;
     }
