@@ -114,6 +114,8 @@ input{font-family:inherit}
 .ti{display:flex;align-items:center;gap:12px;padding:10px 20px;cursor:pointer;transition:background var(--tr)}
 .ti:hover{background:var(--acg)}
 .ti.act{color:var(--ac)}
+.ti.unavail{opacity:.45;cursor:not-allowed}
+.ti.unavail:hover{background:transparent}
 .tn{width:28px;text-align:center;font-size:.8rem;color:var(--tm);flex-shrink:0}
 .tt{flex:1;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .td{font-size:.78rem;color:var(--tm);flex-shrink:0}
@@ -292,6 +294,7 @@ input{font-family:inherit}
 <script>
 /* ── State ───────────────────────────────────────────── */
 let allAlbums = [];
+let unavailableAlbums = new Set(); // Album IDs that can't be streamed
 let filtered = [];
 let queue = [];
 let history = [];
@@ -309,7 +312,13 @@ const audio = document.getElementById('audioPlayer');
 audio.addEventListener('play', () => { playing = true; updatePlayIcon(); });
 audio.addEventListener('pause', () => { playing = false; updatePlayIcon(); });
 audio.addEventListener('ended', onTrackEnd);
-audio.addEventListener('error', () => { playing = false; updatePlayIcon(); });
+audio.addEventListener('error', () => {
+  playing = false; updatePlayIcon();
+  // Check if this is a streaming error (not available)
+  if (audio.src && audio.src.includes('/api/stream/')) {
+    showMsg('Track not available for streaming', 'err');
+  }
+});
 audio.addEventListener('timeupdate', updateTimeline);
 audio.addEventListener('loadedmetadata', () => { updateTimeline(); });
 
@@ -415,6 +424,8 @@ async function fetchAlbums() {
     filtered = shuffleArr([...allAlbums]);
     updateStats();
     renderGrid(filtered);
+    // Batch-fix blank covers in the background
+    fixAllBlankCovers();
   } catch (e) {
     showMsg('Failed to fetch albums: ' + e.message, 'err');
     wrap.innerHTML = '<div class="empty">Could not load albums</div>';
@@ -442,18 +453,114 @@ function renderGrid(albums) {
     wrap.innerHTML = '<div class="empty">No albums found</div>';
     return;
   }
+  const blankSvg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='250' height='250' viewBox='0 0 250 250'%3E%3Crect fill='%2324223a' width='250' height='250'/%3E%3Ctext x='125' y='135' text-anchor='middle' fill='%236c6886' font-size='48' font-family='sans-serif'%3E%E2%99%AA%3C/text%3E%3C/svg%3E";
   let html = '<div class="agrid">';
   for (const a of albums) {
     const active = currentAlbum && currentAlbum.id === a.id ? ' active' : '';
-    const img = a.cover_medium || a.cover || '';
+    const isBlank = a.cover_blank || !a.cover_medium;
+    const cached = _coverFixCache[a.id];
+    let imgSrc;
+    if (isBlank && cached) {
+      imgSrc = escHtml(cached.medium);
+    } else if (isBlank) {
+      imgSrc = blankSvg;
+    } else {
+      imgSrc = escHtml(a.cover_medium || a.cover || '');
+    }
+    const fixAttr = !isBlank ? `onerror="fixCover(this, ${a.id})"` : '';
     html += `<div class="acard${active}" data-id="${a.id}" onclick="playAlbumById(${a.id})">
-      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <img src="${imgSrc}" alt="${escHtml(a.title)}" loading="lazy" ${fixAttr}>
       <div class="pov"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
       <div class="inf"><div class="ttl">${escHtml(a.title)}</div><div class="art">${escHtml(a.artist ? a.artist.name : '')}</div></div>
     </div>`;
   }
   html += '</div>';
   wrap.innerHTML = html;
+}
+
+/* ── Fix broken cover images ──────────────────────────────── */
+const _coverFixCache = {};
+const _coverFixPending = new Set();
+const BLANK_HASH = 'd41d8cd98f00b204e9800998ecf8427e';
+
+function fixCover(img, albumId, size) {
+  if (_coverFixCache[albumId]) { img.src = size === 'big' ? _coverFixCache[albumId].big : _coverFixCache[albumId].medium; return; }
+  if (_coverFixPending.has(albumId)) return; // already fetching
+  _coverFixPending.add(albumId);
+  img.onerror = null; // prevent loop
+  fetch('/api/fix-cover/' + albumId).then(r => r.json()).then(d => {
+    _coverFixPending.delete(albumId);
+    if (d.cover_medium || d.cover_big) {
+      _coverFixCache[albumId] = { medium: d.cover_medium, big: d.cover_big };
+      img.src = size === 'big' ? d.cover_big : d.cover_medium;
+      // Also update album data in memory
+      updateAlbumCover(albumId, d.cover_medium, d.cover_big);
+    }
+  }).catch(() => { _coverFixPending.delete(albumId); });
+}
+
+function updateAlbumCover(albumId, coverMedium, coverBig) {
+  const album = allAlbums.find(a => a.id == albumId);
+  if (album) { album.cover_medium = coverMedium; album.cover_big = coverBig; album.cover = coverMedium; album.cover_blank = false; }
+  const release = newReleases.find(a => a.id == albumId);
+  if (release) { release.cover_medium = coverMedium; release.cover_big = coverBig; release.cover = coverMedium; release.cover_blank = false; }
+}
+
+// Batch-fix all blank covers in the background
+function fixAllBlankCovers() {
+  const blankAlbums = allAlbums.filter(a => a.cover_blank && !_coverFixCache[a.id] && !_coverFixPending.has(a.id));
+  if (!blankAlbums.length) return;
+  let i = 0;
+  function next() {
+    if (i >= blankAlbums.length) return;
+    const a = blankAlbums[i++];
+    _coverFixPending.add(a.id);
+    fetch('/api/fix-cover/' + a.id).then(r => r.json()).then(d => {
+      _coverFixPending.delete(a.id);
+      if (d.cover_medium || d.cover_big) {
+        _coverFixCache[a.id] = { medium: d.cover_medium, big: d.cover_big };
+        updateAlbumCover(a.id, d.cover_medium, d.cover_big);
+        // Update any visible card
+        const card = document.querySelector(`.acard[data-id="${a.id}"] img`);
+        if (card) card.src = d.cover_medium;
+      }
+      setTimeout(next, 200); // rate limit
+    }).catch(() => { _coverFixPending.delete(a.id); setTimeout(next, 200); });
+  }
+  next();
+}
+
+// Fix cover for now-playing bar (updates both np and drawer art)
+function fixCoverNowPlaying(albumId) {
+  if (_coverFixCache[albumId]) {
+    document.getElementById('npArt').src = _coverFixCache[albumId].medium;
+    document.getElementById('drArt').src = _coverFixCache[albumId].big;
+    return;
+  }
+  fetch('/api/fix-cover/' + albumId).then(r => r.json()).then(d => {
+    if (d.cover_medium || d.cover_big) {
+      _coverFixCache[albumId] = { medium: d.cover_medium, big: d.cover_big };
+      updateAlbumCover(albumId, d.cover_medium, d.cover_big);
+      document.getElementById('npArt').src = d.cover_medium;
+      document.getElementById('drArt').src = d.cover_big;
+    }
+  }).catch(() => {});
+}
+
+/* ── Toast messages ──────────────────────────────── */
+function showMsg(text, type) {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'toast';
+    el.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:8px;z-index:9999;font-size:14px;opacity:0;transition:opacity .3s';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.style.background = type === 'err' ? '#c0392b' : '#2ecc71';
+  el.style.color = '#fff';
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 3000);
 }
 
 function escHtml(s) {
@@ -525,12 +632,19 @@ function renderQueue() {
   const show = src.slice(0, 5);
   if (!show.length) { sec.style.display = 'none'; return; }
   sec.style.display = '';
+  const blankSvg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'%3E%3Crect fill='%2324223a' width='100' height='100'/%3E%3Ctext x='50' y='58' text-anchor='middle' fill='%236c6886' font-size='30' font-family='sans-serif'%3E%E2%99%AA%3C/text%3E%3C/svg%3E";
   let html = '';
   const playFn = activeTab === 'releases' ? 'playReleaseById' : 'playAlbumById';
   for (const a of show) {
-    const img = a.cover_medium || a.cover || '';
+    const isBlank = a.cover_blank || !a.cover_medium;
+    const cached = _coverFixCache[a.id];
+    let imgSrc;
+    if (isBlank && cached) imgSrc = escHtml(cached.medium);
+    else if (isBlank) imgSrc = blankSvg;
+    else imgSrc = escHtml(a.cover_medium || a.cover || '');
+    const fixAttr = !isBlank ? `onerror="fixCover(this, ${a.id})"` : '';
     html += `<div class="qi" onclick="${playFn}(${a.id})">
-      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <img src="${imgSrc}" alt="${escHtml(a.title)}" loading="lazy" ${fixAttr}>
       <div class="qt">${escHtml(a.title)}</div>
     </div>`;
   }
@@ -569,6 +683,10 @@ async function fetchAndRenderTracks(albumId) {
   try {
     const d = await api('album/' + albumId + '/tracks?limit=100');
     currentTracks = d.data || [];
+    // Check if all tracks are unavailable
+    const allUnavail = currentTracks.length > 0 && currentTracks.every(t => t.status === 3 || t.status === 0);
+    if (allUnavail) unavailableAlbums.add(Number(albumId));
+    else unavailableAlbums.delete(Number(albumId));
     renderTrackList();
   } catch (e) {
     currentTracks = [];
@@ -586,9 +704,11 @@ function renderTrackList() {
   currentTracks.forEach((t, i) => {
     const dur = t.duration ? formatDur(t.duration) : '';
     const act = i === currentTrackIdx ? ' act' : '';
-    html += `<div class="ti${act}" data-idx="${i}" onclick="playTrackByIndex(${i})">
+    const unavail = (t.status === 3 || t.status === 0) ? ' unavail' : '';
+    const label = unavail ? ' 🔒' : '';
+    html += `<div class="ti${act}${unavail}" data-idx="${i}" onclick="playTrackByIndex(${i})">
       <span class="tn">${i + 1}</span>
-      <span class="tt">${escHtml(t.title)}</span>
+      <span class="tt">${escHtml(t.title)}${label}</span>
       <span class="td">${dur}</span>
     </div>`;
   });
@@ -655,6 +775,12 @@ async function playTrackByIndex(idx) {
   if (!currentTracks[idx]) return;
   currentTrackIdx = idx;
   const track = currentTracks[idx];
+  // Check if track is unavailable (STATUS 3)
+  if (track.status === 3 || track.status === 0) {
+    showMsg('This track is not available for streaming', 'err');
+    renderTrackList();
+    return;
+  }
   try {
     // Use the stream proxy endpoint with selected quality
     const q = document.getElementById('qualitySelect')?.value || '3';
@@ -684,14 +810,31 @@ function onTrackEnd() {
 function updateNowPlaying(album) {
   const np = document.getElementById('nowPlaying');
   np.classList.remove('hid');
-  const img = album.cover_medium || album.cover || '';
-  document.getElementById('npArt').src = img;
+  const blankSvg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Crect fill='%2324223a' width='60' height='60'/%3E%3Ctext x='30' y='38' text-anchor='middle' fill='%236c6886' font-size='20' font-family='sans-serif'%3E%E2%99%AA%3C/text%3E%3C/svg%3E";
+  const blankSvgBig = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='52' viewBox='0 0 52 52'%3E%3Crect fill='%2324223a' width='52' height='52'/%3E%3Ctext x='26' y='34' text-anchor='middle' fill='%236c6886' font-size='18' font-family='sans-serif'%3E%E2%99%AA%3C/text%3E%3C/svg%3E";
+  const isBlank = album.cover_blank || !album.cover_medium;
+  const cached = _coverFixCache[album.id];
+  let imgSrc, bigSrc;
+  if (isBlank && cached) {
+    imgSrc = cached.medium;
+    bigSrc = cached.big;
+  } else if (isBlank) {
+    imgSrc = blankSvg;
+    bigSrc = blankSvgBig;
+  } else {
+    imgSrc = album.cover_medium || album.cover || '';
+    bigSrc = album.cover_big || album.cover_medium || album.cover || '';
+  }
+  document.getElementById('npArt').src = imgSrc;
+  document.getElementById('npArt').onerror = function() { if (album.id) fixCover(this, album.id); };
   document.getElementById('npTtl').textContent = album.title || '—';
   document.getElementById('npArtName').textContent = album.artist ? album.artist.name : '—';
-  const coverBig = album.cover_big || album.cover_medium || album.cover || '';
-  document.getElementById('drArt').src = coverBig;
+  document.getElementById('drArt').src = bigSrc;
+  document.getElementById('drArt').onerror = function() { if (album.id) fixCover(this, album.id, 'big'); };
   document.getElementById('drTtl').textContent = album.title || '—';
   document.getElementById('drArtName').textContent = album.artist ? album.artist.name : '—';
+  // If blank cover, try to fix it
+  if (isBlank && !cached) fixCoverNowPlaying(album.id);
   updateTitle();
 }
 
@@ -770,14 +913,25 @@ function refreshNewReleases() {
 
 function renderReleasesGrid(albums) {
   const grid = document.getElementById('releasesGrid');
+  const blankSvg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='250' height='250' viewBox='0 0 250 250'%3E%3Crect fill='%2324223a' width='250' height='250'/%3E%3Ctext x='125' y='135' text-anchor='middle' fill='%236c6886' font-size='48' font-family='sans-serif'%3E%E2%99%AA%3C/text%3E%3C/svg%3E";
   let html = '<div class="agrid">';
   for (const a of albums) {
     const active = currentAlbum && currentAlbum.id === a.id ? ' active' : '';
-    const img = a.cover_medium || a.cover || '';
+    const isBlank = a.cover_blank || !a.cover_medium;
+    const cached = _coverFixCache[a.id];
+    let imgSrc2;
+    if (isBlank && cached) {
+      imgSrc2 = escHtml(cached.medium);
+    } else if (isBlank) {
+      imgSrc2 = blankSvg;
+    } else {
+      imgSrc2 = escHtml(a.cover_medium || a.cover || '');
+    }
+    const fixAttr2 = !isBlank ? `onerror="fixCover(this, ${a.id})"` : '';
     const dateStr = a.release_date ? new Date(a.release_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
     html += `<div class="acard${active}" data-id="${a.id}" onclick="playReleaseById(${a.id})">
       <button class="like-btn" title="Add to library" onclick="event.stopPropagation(); addAlbumToLibrary(${a.id}, this)"><svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
-      <img src="${escHtml(img)}" alt="${escHtml(a.title)}" loading="lazy">
+      <img src="${imgSrc2}" alt="${escHtml(a.title)}" loading="lazy" ${fixAttr2}>
       <div class="pov"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
       <div class="inf"><div class="ttl">${escHtml(a.title)}</div><div class="art">${escHtml(a.artist ? a.artist.name : '')}</div>
       <div class="art" style="margin-top:2px;font-size:.65rem;color:var(--tm)" data-tracks="${a.id}">${dateStr}${a.nb_tracks ? ' · ' + a.nb_tracks + ' tracks' : ''}</div></div>
@@ -819,6 +973,16 @@ async function enrichReleasesLazy(albums) {
       // Update card in-place
       a.nb_tracks = d.nb_tracks;
       a.record_type = d.record_type;
+      // Also fix blank covers if the detail returned one
+      if (d.cover_medium && (a.cover_blank || !a.cover_medium)) {
+        a.cover_medium = d.cover_medium;
+        a.cover_big = d.cover_big || d.cover_medium;
+        a.cover = d.cover_medium;
+        a.cover_blank = false;
+        _coverFixCache[a.id] = { medium: d.cover_medium, big: d.cover_big || d.cover_medium };
+        const cardImg = document.querySelector(`.acard[data-id="${a.id}"] img`);
+        if (cardImg) cardImg.src = d.cover_medium;
+      }
       const trackEl = document.querySelector(`[data-tracks="${a.id}"]`);
       if (trackEl && d.nb_tracks) {
         const dateStr = a.release_date ? new Date(a.release_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
