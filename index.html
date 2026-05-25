@@ -459,17 +459,15 @@ function renderGrid(albums) {
     const active = currentAlbum && currentAlbum.id === a.id ? ' active' : '';
     const isBlank = a.cover_blank || !a.cover_medium;
     const cached = _coverFixCache[a.id];
-    let imgSrc, fixAttr;
+    let imgSrc;
     if (isBlank && cached) {
       imgSrc = escHtml(cached.medium);
-      fixAttr = '';
     } else if (isBlank) {
       imgSrc = blankSvg;
-      fixAttr = `onload="fixCover(this, ${a.id})" onerror="fixCover(this, ${a.id})"`;
     } else {
       imgSrc = escHtml(a.cover_medium || a.cover || '');
-      fixAttr = `onerror="fixCover(this, ${a.id})"`;
     }
+    const fixAttr = !isBlank ? `onerror="fixCover(this, ${a.id})"` : '';
     html += `<div class="acard${active}" data-id="${a.id}" onclick="playAlbumById(${a.id})">
       <img src="${imgSrc}" alt="${escHtml(a.title)}" loading="lazy" ${fixAttr}>
       <div class="pov"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
@@ -644,7 +642,7 @@ function renderQueue() {
     if (isBlank && cached) imgSrc = escHtml(cached.medium);
     else if (isBlank) imgSrc = blankSvg;
     else imgSrc = escHtml(a.cover_medium || a.cover || '');
-    const fixAttr = isBlank && !cached ? `onload="fixCover(this, ${a.id})" onerror="fixCover(this, ${a.id})"` : `onerror="fixCover(this, ${a.id})"`;
+    const fixAttr = !isBlank ? `onerror="fixCover(this, ${a.id})"` : '';
     html += `<div class="qi" onclick="${playFn}(${a.id})">
       <img src="${imgSrc}" alt="${escHtml(a.title)}" loading="lazy" ${fixAttr}>
       <div class="qt">${escHtml(a.title)}</div>
@@ -921,17 +919,15 @@ function renderReleasesGrid(albums) {
     const active = currentAlbum && currentAlbum.id === a.id ? ' active' : '';
     const isBlank = a.cover_blank || !a.cover_medium;
     const cached = _coverFixCache[a.id];
-    let imgSrc2, fixAttr2;
+    let imgSrc2;
     if (isBlank && cached) {
       imgSrc2 = escHtml(cached.medium);
-      fixAttr2 = '';
     } else if (isBlank) {
       imgSrc2 = blankSvg;
-      fixAttr2 = `onload="fixCover(this, ${a.id})" onerror="fixCover(this, ${a.id})"`;
     } else {
       imgSrc2 = escHtml(a.cover_medium || a.cover || '');
-      fixAttr2 = `onerror="fixCover(this, ${a.id})"`;
     }
+    const fixAttr2 = !isBlank ? `onerror="fixCover(this, ${a.id})"` : '';
     const dateStr = a.release_date ? new Date(a.release_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
     html += `<div class="acard${active}" data-id="${a.id}" onclick="playReleaseById(${a.id})">
       <button class="like-btn" title="Add to library" onclick="event.stopPropagation(); addAlbumToLibrary(${a.id}, this)"><svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
